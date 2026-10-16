@@ -39,6 +39,8 @@ import (
 //go:generate $BPF2GO -cc $BPF_CLANG -cflags $BPF_CFLAGS -tags privileged_tests -target amd64,arm64 BpfH2MutationProbe ../../../../bpf/tests/testdata/h2_mutation_peer.c -- -I../../../../bpf -I../../../../bpf
 
 type Tracer struct {
+	legacySKMsg             bool
+	skMsgTaskProbe          func() error
 	cfg                     *obi.Config
 	bpfObjects              BpfObjects
 	bpfIterObjects          BpfIterObjects
@@ -77,6 +79,14 @@ func New(cfg *obi.Config) *Tracer {
 		log:           log,
 		cfg:           cfg,
 		fionreadProbe: sockhashFIONREADProbe,
+		skMsgTaskProbe: func() error {
+			for _, helper := range []asm.BuiltinFunc{asm.FnGetCurrentTask, asm.FnProbeReadKernel} {
+				if err := features.HaveProgramHelper(ebpf.SkMsg, helper); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
 		seenNetns:     expirable.NewLRU[uint64, struct{}](seenNetnsCacheLen, nil, seenNetnsTTL),
 		netnsAttempts: expirable.NewLRU[uint64, int](seenNetnsCacheLen, nil, seenNetnsTTL),
 	}
@@ -140,6 +150,10 @@ func (p *Tracer) AllowPID(pid app.PID, _ uint32, _ *exec.FileInfo) {
 func (p *Tracer) BlockPID(app.PID, uint32) {}
 
 func (p *Tracer) LoadSpecs() ([]*ebpfcommon.SpecBundle, error) {
+	if err := p.configureSKMsg(); err != nil {
+		return nil, err
+	}
+
 	spec, err := LoadBpf()
 	if err != nil {
 		return nil, err
@@ -191,6 +205,20 @@ func (p *Tracer) LoadSpecs() ([]*ebpfcommon.SpecBundle, error) {
 	return bundles, nil
 }
 
+func (p *Tracer) configureSKMsg() error {
+	err := p.skMsgTaskProbe()
+	switch {
+	case err == nil:
+		p.legacySKMsg = false
+	case errors.Is(err, ebpf.ErrNotSupported):
+		p.legacySKMsg = true
+		p.log.Warn("SK_MSG tracing helper unavailable: HTTP/1 propagation requires matching socket/thread identity; HTTP/2 injection disabled")
+	default:
+		return fmt.Errorf("probe SK_MSG task helper: %w", err)
+	}
+	return nil
+}
+
 func verifyH2MutationSupport() error {
 	if err := features.HaveProgramHelper(ebpf.SkMsg, asm.FnMsgPopData); err != nil {
 		return fmt.Errorf("sk_msg helper %s: %w", asm.FnMsgPopData, err)
@@ -233,6 +261,7 @@ func (p *Tracer) constants() map[string]any {
 
 	return map[string]any{
 		"filter_pids":          filterPids,
+		"legacy_sk_msg":        p.legacySKMsg,
 		"max_transaction_time": uint64(p.cfg.EBPF.MaxTransactionTime.Nanoseconds()),
 		"inject_flags":         flags,
 		"g_bpf_debug":          p.cfg.EBPF.BpfDebug,

@@ -33,6 +33,9 @@ func TestCheckOSSupport_Supported(t *testing.T) {
 	isRHELBased = func() bool { return false }
 	hasBTF = func() bool { return true }
 	for _, tc := range []testCase{
+		{maj: 4, min: 0},
+		{maj: 4, min: 19},
+		{maj: 5, min: 7},
 		{maj: 5, min: 8},
 		{maj: 6, min: 0},
 		{maj: 7, min: 15},
@@ -50,9 +53,7 @@ func TestCheckOSSupport_Unsupported(t *testing.T) {
 	for _, tc := range []testCase{
 		{maj: 0, min: 0},
 		{maj: 3, min: 11},
-		{maj: 4, min: 0},
-		{maj: 4, min: 17},
-		{maj: 5, min: 7},
+		{maj: 3, min: 99},
 	} {
 		t.Run(fmt.Sprintf("%d.%d", tc.maj, tc.min), func(t *testing.T) {
 			overrideKernelVersion(tc)
@@ -70,9 +71,9 @@ func TestCheckOSSupport_RHELBased(t *testing.T) {
 		wantErr  bool
 	}{
 		{name: "RHEL 4.18 supported", isRHEL: true, maj: 4, min: 18, wantErr: false},
-		{name: "RHEL 4.17 unsupported", isRHEL: true, maj: 4, min: 17, wantErr: true},
+		{name: "RHEL 4.17 admitted", isRHEL: true, maj: 4, min: 17, wantErr: false},
 		{name: "RHEL 5.8 supported", isRHEL: true, maj: 5, min: 8, wantErr: false},
-		{name: "non-RHEL 4.18 unsupported", isRHEL: false, maj: 4, min: 18, wantErr: true},
+		{name: "non-RHEL 4.18 admitted", isRHEL: false, maj: 4, min: 18, wantErr: false},
 		{name: "non-RHEL 5.8 supported", isRHEL: false, maj: 5, min: 8, wantErr: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -95,6 +96,16 @@ func TestCheckOSSupport_NoBTF(t *testing.T) {
 	err := checkOSSupport()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "BTF")
+}
+
+func TestCheckOSSupport_Linux4RequiresBTF(t *testing.T) {
+	originalVersion, originalBTF := kernelVersion, hasBTF
+	t.Cleanup(func() { kernelVersion, hasBTF = originalVersion, originalBTF })
+	for _, version := range []testCase{{4, 0}, {4, 19}} {
+		overrideKernelVersion(version)
+		hasBTF = func() bool { return false }
+		require.ErrorContains(t, checkOSSupport(), "BTF")
+	}
 }
 
 func TestParseOSReleaseIsRHEL(t *testing.T) {

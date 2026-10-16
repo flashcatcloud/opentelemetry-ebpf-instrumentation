@@ -534,7 +534,12 @@ static __always_inline void h2_resume_cut_frame(grpc_frames_ctx_t *g_ctx) {
 
         if (joined &&
             (!next || next + k_frame_header_len > len || h2_frame_header_plausible(buf + next))) {
+            // Re-establish bounds at each helper call: older verifiers can lose
+            // scalar ranges when these values are spilled across earlier calls.
+            bpf_clamp_umax(kept, k_kprobes_http2_buf_size);
             bpf_probe_read_kernel(joined, kept, cut->data);
+            bpf_clamp_umax(kept, k_kprobes_http2_buf_size);
+            bpf_clamp_umax(len, k_iovec_max_len);
             bpf_probe_read(joined + kept, len, buf);
             g_ctx->args.u_buf = (u64)joined;
             g_ctx->args.bytes_len = kept + len;

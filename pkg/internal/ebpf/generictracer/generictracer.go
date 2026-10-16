@@ -19,6 +19,8 @@ import (
 	"unsafe"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/asm"
+	"github.com/cilium/ebpf/link"
 	"github.com/hashicorp/golang-lru/v2/expirable"
 	"github.com/vishvananda/netlink"
 
@@ -43,25 +45,26 @@ import (
 //go:generate $BPF2GO -cc $BPF_CLANG -cflags $BPF_CFLAGS -target amd64,arm64 Bpf ../../../../bpf/generictracer/generictracer.c -- -I../../../../bpf
 
 type Tracer struct {
-	pidsFilter         ebpfcommon.ServiceFilter
-	cfg                *obi.Config
-	metrics            imetrics.Reporter
-	traceCtxMapEnabled bool
-	bpfObjects         BpfObjects
-	closers            []io.Closer
-	log                *slog.Logger
-	qdiscs             map[ifaces.Interface]*netlink.GenericQdisc
-	egressFilters      map[ifaces.Interface]*netlink.BpfFilter
-	ingressFilters     map[ifaces.Interface]*netlink.BpfFilter
-	instrumentedLibs   ebpfcommon.InstrumentedLibsT
-	libsMux            sync.Mutex
-	jvmGenerations     sync.Map
-	iters              []*ebpfcommon.Iter
-	iterMu             sync.Mutex
-	seenNetns          *expirable.LRU[uint64, struct{}]
-	eventCtx           *ebpfcommon.EBPFEventContext
-	jvmUSDTManager     ebpfcommon.USDTSpecManager
-	pythonRuntime      *pythonRuntimeController
+	pidsFilter          ebpfcommon.ServiceFilter
+	cfg                 *obi.Config
+	metrics             imetrics.Reporter
+	traceCtxMapEnabled  bool
+	bpfObjects          BpfObjects
+	closers             []io.Closer
+	log                 *slog.Logger
+	qdiscs              map[ifaces.Interface]*netlink.GenericQdisc
+	egressFilters       map[ifaces.Interface]*netlink.BpfFilter
+	ingressFilters      map[ifaces.Interface]*netlink.BpfFilter
+	instrumentedLibs    ebpfcommon.InstrumentedLibsT
+	libsMux             sync.Mutex
+	jvmGenerations      sync.Map
+	iters               []*ebpfcommon.Iter
+	tcpIteratorDisabled bool
+	iterMu              sync.Mutex
+	seenNetns           *expirable.LRU[uint64, struct{}]
+	eventCtx            *ebpfcommon.EBPFEventContext
+	jvmUSDTManager      ebpfcommon.USDTSpecManager
+	pythonRuntime       *pythonRuntimeController
 }
 
 func tlog() *slog.Logger {
@@ -236,6 +239,9 @@ func (p *Tracer) LoadSpecs() ([]*ebpfcommon.SpecBundle, error) {
 	}
 
 	ebpfcommon.FixupSpec(spec, p.cfg.EBPF.OverrideBPFLoopEnabled)
+	if err := p.configureTCPIterator(spec, probeTCPIterator()); err != nil {
+		return nil, err
+	}
 
 	return []*ebpfcommon.SpecBundle{{Spec: spec, Objects: &p.bpfObjects, Constants: p.constants()}}, nil
 }
@@ -652,7 +658,55 @@ func (p *Tracer) SockMsgs() []ebpfcommon.SockMsg { return nil }
 
 func (p *Tracer) SockOps() []ebpfcommon.SockOps { return nil }
 
+var probeTCPIterator = sync.OnceValue(func() error {
+	prog, err := ebpf.NewProgram(&ebpf.ProgramSpec{
+		Name:         "obi_iter_probe",
+		Type:         ebpf.Tracing,
+		AttachType:   ebpf.AttachTraceIter,
+		AttachTo:     "tcp",
+		License:      "GPL",
+		Instructions: asm.Instructions{asm.Mov.Imm(asm.R0, 0), asm.Return()},
+	})
+	if err != nil {
+		return err
+	}
+	defer prog.Close()
+	iter, err := link.AttachIter(link.IterOptions{Program: prog})
+	if err != nil {
+		return err
+	}
+	defer iter.Close()
+	reader, err := iter.Open()
+	if err != nil {
+		return err
+	}
+	return reader.Close()
+})
+
+func (p *Tracer) configureTCPIterator(spec *ebpf.CollectionSpec, probeErr error) error {
+	if probeErr == nil {
+		return nil
+	}
+	if !errors.Is(probeErr, ebpf.ErrNotSupported) {
+		return fmt.Errorf("probing TCP iterator: %w", probeErr)
+	}
+	// Keep the generated object binding, but never attach the placeholder.
+	// New accepts populate listening_ports; existing listeners are not preloaded.
+	spec.Programs["obi_iter_tcp"] = &ebpf.ProgramSpec{
+		Name:         "obi_iter_tcp",
+		Type:         ebpf.Kprobe,
+		License:      "GPL",
+		Instructions: asm.Instructions{asm.Mov.Imm(asm.R0, 0), asm.Return()},
+	}
+	p.tcpIteratorDisabled = true
+	p.log.Warn("TCP iterator unavailable; listening ports will be learned from new accepts", "error", probeErr)
+	return nil
+}
+
 func (p *Tracer) Iters() []*ebpfcommon.Iter {
+	if p.tcpIteratorDisabled {
+		return nil
+	}
 	if len(p.iters) == 0 {
 		p.iters = []*ebpfcommon.Iter{
 			{

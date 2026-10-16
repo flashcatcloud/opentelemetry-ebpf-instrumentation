@@ -7,6 +7,8 @@ package tpinjector
 
 import (
 	"context"
+	"fmt"
+	"syscall"
 	"testing"
 	"time"
 
@@ -208,4 +210,30 @@ func TestAddCloserAfterDetachClosesImmediately(t *testing.T) {
 
 	assert.Equal(t, []string{"late"}, closed)
 	assert.Empty(t, tr.closers)
+}
+
+func TestSKMsgCompatibility(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		probeErr error
+		legacy   bool
+	}{
+		{"supported", nil, false},
+		{"unsupported", fmt.Errorf("helper: %w", ebpf.ErrNotSupported), true},
+		{"permission", syscall.EPERM, false},
+		{"invalid", syscall.EINVAL, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tracer := New(&obi.Config{})
+			tracer.skMsgTaskProbe = func() error { return tc.probeErr }
+			err := tracer.configureSKMsg()
+			if tc.probeErr != nil && !tc.legacy {
+				require.ErrorIs(t, err, tc.probeErr)
+			} else {
+				require.NoError(t, err)
+			}
+			require.Equal(t, tc.legacy, tracer.legacySKMsg)
+			require.Equal(t, tc.legacy, tracer.constants()["legacy_sk_msg"])
+		})
+	}
 }
