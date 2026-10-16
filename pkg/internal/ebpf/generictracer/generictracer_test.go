@@ -7,6 +7,8 @@ package generictracer
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
 	"math"
 	"strings"
 	"testing"
@@ -16,6 +18,7 @@ import (
 	"github.com/cilium/ebpf"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/unix"
 
 	"go.opentelemetry.io/obi/pkg/appolly/app"
 	"go.opentelemetry.io/obi/pkg/appolly/app/request"
@@ -32,6 +35,47 @@ import (
 	"go.opentelemetry.io/obi/pkg/pipe/msg"
 	"go.opentelemetry.io/obi/pkg/runtimemetrics"
 )
+
+func TestTCPIteratorCompatibility(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		probeErr error
+		disabled bool
+		wantErr  bool
+	}{
+		{"supported", nil, false, false},
+		{"unsupported", fmt.Errorf("tcp iterator: %w", ebpf.ErrNotSupported), true, false},
+		{"permission failure", unix.EPERM, false, true},
+		{"invalid argument", unix.EINVAL, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec, err := LoadBpf()
+			require.NoError(t, err)
+			original := spec.Programs["obi_iter_tcp"]
+			require.NotNil(t, original)
+			tracer := &Tracer{log: slog.Default()}
+			err = tracer.configureTCPIterator(spec, tc.probeErr)
+			if tc.wantErr {
+				require.ErrorIs(t, err, tc.probeErr)
+			} else {
+				require.NoError(t, err)
+			}
+			require.Equal(t, tc.disabled, tracer.tcpIteratorDisabled)
+			if tc.disabled {
+				require.Empty(t, tracer.Iters())
+				placeholder := spec.Programs["obi_iter_tcp"]
+				require.Equal(t, ebpf.Kprobe, placeholder.Type)
+				require.Empty(t, placeholder.AttachTo)
+				require.Len(t, placeholder.Instructions, 2)
+			} else {
+				require.Same(t, original, spec.Programs["obi_iter_tcp"])
+				if !tc.wantErr {
+					require.Len(t, tracer.Iters(), 1)
+				}
+			}
+		})
+	}
+}
 
 func TestBitPositionCalculation(t *testing.T) {
 	for _, v := range [][4]uint32{

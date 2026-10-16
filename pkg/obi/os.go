@@ -19,10 +19,9 @@ import (
 	"go.opentelemetry.io/obi/pkg/internal/helpers"
 )
 
-// Minimum required Kernel version: 5.8 (or 4.18 for RHEL-based distros)
+// The test build admits Linux 4.x; BTF and actual BPF loads still gate support.
 const (
-	minKernMaj, minKernMin         = 5, 8
-	minRHELKernMaj, minRHELKernMin = 4, 18
+	minKernMaj, minKernMin = 4, 0
 )
 
 var kernelVersion = ebpfcommon.KernelVersion
@@ -105,9 +104,7 @@ var hasBTF = func() bool {
 func checkOSSupport() error {
 	major, minor := kernelVersion()
 	general := major > minKernMaj || (major == minKernMaj && minor >= minKernMin)
-	// RHEL relaxation only applies at the 4.18 floor.
-	rhel418 := major == minRHELKernMaj && minor == minRHELKernMin && isRHELBased()
-	if !general && !rhel418 {
+	if !general {
 		return fmt.Errorf("kernel version %d.%d not supported. Minimum required version is %d.%d",
 			major, minor, minKernMaj, minKernMin)
 	}
