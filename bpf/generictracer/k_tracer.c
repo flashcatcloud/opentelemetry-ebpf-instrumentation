@@ -517,6 +517,8 @@ int BPF_KPROBE_GUARDED(obi_kprobe_tcp_sendmsg, struct sock *sk, struct msghdr *m
         u64 *ssl = is_ssl_connection(&s_args.p_conn);
 
         if (size > 0) {
+            // A reply ends the receive sequence, e.g. MySQL COM_PING has a one-byte payload.
+            bpf_map_delete_elem(&recv_prefixes, &s_args.p_conn);
             if (!ssl) {
                 unsigned char *buf = iovec_memory();
                 if (buf) {
@@ -669,6 +671,7 @@ int BPF_KPROBE_GUARDED(obi_kprobe_tcp_rate_check_app_limited, struct sock *sk) {
         if (!ssl) {
             msg_buffer_t *m_buf = bpf_map_lookup_elem(&msg_buffers, &e_key);
             if (m_buf) {
+                bpf_map_delete_elem(&recv_prefixes, &s_args.p_conn);
                 unsigned char *buf = NULL;
                 const u32 cpu_id = bpf_get_smp_processor_id();
                 const bool use_fallback = m_buf->cpu_id != cpu_id;
