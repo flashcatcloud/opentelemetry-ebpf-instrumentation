@@ -7,12 +7,14 @@ package ebpf // import "go.opentelemetry.io/obi/pkg/ebpf"
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	v2 "github.com/containers/common/pkg/cgroupv2"
+	"github.com/prometheus/procfs"
 	"golang.org/x/sys/unix"
 )
 
@@ -40,6 +42,15 @@ var cgroupV2Once = sync.OnceValue(func() cgroupV2Result {
 	if isCgroup2Mount(cgroupV2Hybrid) {
 		return cgroupV2Result{path: cgroupV2Hybrid, mfd: -1}
 	}
+	self, err := procfs.Self()
+	if err == nil {
+		if mounts, readErr := self.MountInfo(); readErr == nil {
+			if path := cgroupV2RootFromMounts(mounts); path != "" {
+				log.Info("using existing cgroup2 hierarchy", "path", path)
+				return cgroupV2Result{path: path, mfd: -1}
+			}
+		}
+	}
 	mfd, err := fsmountCgroupV2()
 	if err != nil {
 		log.Warn("could not self-mount cgroupv2", "error", err)
@@ -48,6 +59,28 @@ var cgroupV2Once = sync.OnceValue(func() cgroupV2Result {
 	log.Info("self-mounted cgroup2 hierarchy via fsmount", "mfd", mfd)
 	return cgroupV2Result{mfd: mfd}
 })
+
+// resolveCgroupV2 uses the configured hierarchy when one is given, so a host
+// cgroup2 mounted outside /sys/fs/cgroup can be targeted from a container with
+// its own cgroup namespace.
+func resolveCgroupV2(cgroupPath string) cgroupV2Result {
+	if cgroupPath == "" {
+		return cgroupV2Once()
+	}
+	if !isCgroup2Mount(cgroupPath) {
+		return cgroupV2Result{mfd: -1, err: fmt.Errorf("%s is not a cgroupv2 mount", cgroupPath)}
+	}
+	return cgroupV2Result{path: cgroupPath, mfd: -1}
+}
+
+func cgroupV2RootFromMounts(mounts []*procfs.MountInfo) string {
+	for _, mount := range mounts {
+		if mount.FSType == "cgroup2" && mount.Root == "/" && isCgroup2Mount(mount.MountPoint) {
+			return mount.MountPoint
+		}
+	}
+	return ""
+}
 
 func isCgroup2Mount(path string) bool {
 	var st unix.Statfs_t
@@ -74,8 +107,9 @@ func fsmountCgroupV2() (int, error) {
 
 // AttachCgroupSockOps attaches a sockops program to the cgroupv2 hierarchy,
 // hiding the path-vs-fd distinction between tier 1/2 and tier 3.
-func AttachCgroupSockOps(prog *ebpf.Program, attach ebpf.AttachType) (link.Link, error) {
-	r := cgroupV2Once()
+// An empty cgroupPath auto-detects the hierarchy.
+func AttachCgroupSockOps(prog *ebpf.Program, attach ebpf.AttachType, cgroupPath string) (link.Link, error) {
+	r := resolveCgroupV2(cgroupPath)
 	if r.err != nil {
 		return nil, r.err
 	}

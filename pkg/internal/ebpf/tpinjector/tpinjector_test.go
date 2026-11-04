@@ -7,6 +7,8 @@ package tpinjector
 
 import (
 	"context"
+	"errors"
+	"syscall"
 	"testing"
 	"time"
 
@@ -81,6 +83,14 @@ func TestTracer_Constants(t *testing.T) {
 		},
 	}
 
+	savedTCPProbe := tcpOptionsSupport
+	tcpOptionsSupport = func() error { return nil }
+	t.Cleanup(func() { tcpOptionsSupport = savedTCPProbe })
+
+	savedProbe := skMsgTracingSupport
+	skMsgTracingSupport = func() error { return nil }
+	t.Cleanup(func() { skMsgTracingSupport = savedProbe })
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := &obi.Config{
@@ -94,7 +104,7 @@ func TestTracer_Constants(t *testing.T) {
 			err := cfg.EBPF.ContextPropagation.UnmarshalText([]byte(tt.contextPropagation))
 			require.NoError(t, err)
 
-			tracer := New(cfg)
+			tracer := New(cfg, nil)
 			// the real probe would add the FIONREAD fixup bundle on affected kernels
 			tracer.fionreadProbe = func(*ebpf.Map) (bool, error) { return false, nil }
 
@@ -118,6 +128,10 @@ func TestTracer_Constants(t *testing.T) {
 
 			_, ok = c["g_bpf_debug"]
 			assert.True(t, ok, "g_bpf_debug should be present")
+
+			enrollInstrumentedOnly, ok := c["enroll_instrumented_only"]
+			assert.True(t, ok, "enroll_instrumented_only should be present")
+			assert.Equal(t, tracer.enrollInstrumentedOnly, enrollInstrumentedOnly)
 
 			// Spec 1 (sock_iter) carries only the debug flag.
 			iterC := bundles[1].Constants
@@ -157,7 +171,7 @@ func (c *recordingCloser) Close() error {
 }
 
 func newDetachTestTracer() *Tracer {
-	tr := New(&obi.Config{})
+	tr := New(&obi.Config{}, nil)
 	tr.sockhashOnce.Do(func() {})
 	return tr
 }
@@ -197,6 +211,7 @@ func TestDetachStopsSocketBackfill(t *testing.T) {
 	tr.detach()
 
 	assert.True(t, tr.backfillDisabled)
+	assert.True(t, tr.pidsStopped)
 }
 
 func TestAddCloserAfterDetachClosesImmediately(t *testing.T) {
@@ -208,4 +223,63 @@ func TestAddCloserAfterDetachClosesImmediately(t *testing.T) {
 
 	assert.Equal(t, []string{"late"}, closed)
 	assert.Empty(t, tr.closers)
+}
+
+func TestSKMsgContextCompatibility(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		err      error
+		fallback bool
+		failure  bool
+	}{
+		{name: "supported"},
+		{name: "unsupported", err: ebpf.ErrNotSupported, fallback: true},
+		{name: "permission", err: syscall.EPERM, failure: true},
+		{name: "unexpected", err: errors.New("probe failed"), failure: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := obi.DefaultConfig
+			require.NoError(t, cfg.EBPF.ContextPropagation.UnmarshalText([]byte("headers")))
+			tracer := New(&cfg, nil)
+			err := tracer.configureSKMsgContext(tc.err)
+			tracer.sockhashOnce.Do(func() { tracer.sockhashOK = true })
+			if tc.failure {
+				require.ErrorIs(t, err, tc.err)
+			} else {
+				require.NoError(t, err)
+			}
+			require.Equal(t, tc.fallback, tracer.skMsgContextInProbe)
+			if tc.fallback {
+				require.Contains(t, tracer.KProbes(), "sock_sendmsg")
+			} else {
+				require.Empty(t, tracer.KProbes())
+			}
+			require.Equal(t, !tc.fallback, tracer.constants()["sk_msg_tracing_helpers"])
+		})
+	}
+}
+
+func TestTCPOptionCompatibility(t *testing.T) {
+	for _, mode := range []string{"headers", "tcp", "all"} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := obi.DefaultConfig
+			require.NoError(t, cfg.EBPF.ContextPropagation.UnmarshalText([]byte(mode)))
+			tracer := New(&cfg, nil)
+			require.NoError(t, tracer.configureTCPOptions(ebpf.ErrNotSupported))
+			var want uint32
+			if mode != "tcp" {
+				want = 1
+			}
+			require.Equal(t, want, tracer.injectionFlags())
+			tracer.skMsgContextInProbe = true
+			if mode == "tcp" {
+				require.Empty(t, tracer.KProbes())
+				require.Empty(t, tracer.SockMsgs())
+				require.Empty(t, tracer.SockOps())
+			}
+			require.NoError(t, tracer.configureTCPOptions(nil))
+			require.False(t, tracer.tcpOptionsUnavailable)
+			require.ErrorIs(t, tracer.configureTCPOptions(syscall.EPERM), syscall.EPERM)
+		})
+	}
 }

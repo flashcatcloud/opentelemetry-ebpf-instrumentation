@@ -31,7 +31,9 @@
 #include <generictracer/k_unix_sock.h>
 #include <generictracer/maps/active_accept_args.h>
 #include <generictracer/maps/active_connect_args.h>
+#include <generictracer/maps/java_http1_requests.h>
 #include <generictracer/maps/listening_ports.h>
+#include <generictracer/maps/recv_prefixes.h>
 #include <generictracer/maps/sock_filter_buffers.h>
 #include <generictracer/maps/tcp_connection_map.h>
 #include <generictracer/protocol_common.h>
@@ -449,7 +451,7 @@ tcp_send_ssl_check(u64 id, void *ssl, pid_connection_info_t *p_conn, u16 orig_dp
     if (!ssl) {
         return;
     }
-    ssl_pid_connection_info_t *s_conn = bpf_map_lookup_elem(&ssl_to_conn, &ssl);
+    ssl_pid_connection_info_t *s_conn = lookup_ssl_conn(p_conn->pid, ssl);
     if (s_conn) {
         finish_possible_delayed_tls_http_request(&s_conn->p_conn);
     }
@@ -457,7 +459,9 @@ tcp_send_ssl_check(u64 id, void *ssl, pid_connection_info_t *p_conn, u16 orig_dp
         .orig_dport = orig_dport,
     };
     __builtin_memcpy(&ssl_conn.p_conn, p_conn, sizeof(pid_connection_info_t));
-    bpf_map_update_elem(&ssl_to_conn, &ssl, &ssl_conn, BPF_ANY);
+    // built late: kept live across the finish above, it overflows obi_kprobe_tcp_sendmsg's stack
+    const pid_ptr_key_t ssl_key = pid_ptr_key(p_conn->pid, ssl);
+    bpf_map_update_elem(&ssl_to_conn, &ssl_key, &ssl_conn, BPF_ANY);
 }
 
 static __always_inline void
@@ -771,6 +775,60 @@ static __always_inline bool is_conn_unreadable(const connection_info_t *conn) {
     return is_port_unreadable(conn->d_port) || is_port_unreadable(conn->s_port);
 }
 
+enum { k_tail_tcp_close_finish };
+
+int obi_kprobe_tcp_close_finish(struct pt_regs *ctx);
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PROG_ARRAY);
+    __uint(max_entries, 1);
+    __uint(key_size, sizeof(u32));
+    __array(values, int(void *));
+} tcp_close_jump_table SEC(".maps") = {
+    .values =
+        {
+            [k_tail_tcp_close_finish] = (void *)&obi_kprobe_tcp_close_finish,
+        },
+};
+
+SEC("kprobe/tcp_close")
+int BPF_KPROBE_GUARDED(obi_kprobe_tcp_close_finish, struct sock *sk) {
+    (void)ctx;
+
+    const u64 id = bpf_get_current_pid_tgid();
+
+    trace_key_t current_key = {};
+    trace_key_from_pid_tid(&current_key);
+
+    u64 sock_p = (u64)sk;
+
+    pid_connection_info_t info = {};
+    const bool success = parse_sock_info(sk, &info.conn);
+
+    bool unreadable = false;
+    if (success) {
+        sort_connection_info(&info.conn);
+        info.pid = pid_from_pid_tgid(id);
+        bpf_map_delete_elem(&recv_prefixes, &info);
+        unreadable = is_conn_unreadable(&info.conn);
+    }
+
+    force_sent_event(id, &sock_p, &info, unreadable, &current_key, sk);
+
+    if (success) {
+        //dbg_print_http_connection_info(&info.conn);
+        info.pid = pid_from_pid_tgid(id);
+        terminate_http_request_if_needed(&info, &current_key);
+        finish_ongoing_tcp_req(&info);
+        bpf_map_delete_elem(&connection_tracker, &info.conn);
+    }
+
+    bpf_map_delete_elem(&active_send_args, &id);
+    bpf_map_delete_elem(&active_send_sock_args, &sock_p);
+
+    return 0;
+}
+
 SEC("kprobe/tcp_close")
 int BPF_KPROBE_GUARDED(obi_kprobe_tcp_close, struct sock *sk, long timeout) {
     (void)ctx;
@@ -781,11 +839,6 @@ int BPF_KPROBE_GUARDED(obi_kprobe_tcp_close, struct sock *sk, long timeout) {
     if (!valid_pid(id)) {
         return 0;
     }
-
-    trace_key_t current_key = {};
-    trace_key_from_pid_tid(&current_key);
-
-    u64 sock_p = (u64)sk;
 
     bpf_dbg_printk("=== kprobe/tcp_close id=%d, sock=%llx ===", id, sk);
 
@@ -813,26 +866,14 @@ int BPF_KPROBE_GUARDED(obi_kprobe_tcp_close, struct sock *sk, long timeout) {
             }
         }
         bpf_map_delete_elem(&cp_support_connect_info, &info);
+        if (g_bpf_java_http1_enabled) {
+            const u64 request_id = java_http1_request_id(&info);
+            java_http1_request_retire(
+                &info, java_http1_request_lookup(&info, request_id), request_id);
+        }
     }
 
-    bool unreadable = false;
-    if (success) {
-        unreadable = is_conn_unreadable(&info.conn);
-    }
-
-    force_sent_event(id, &sock_p, &info, unreadable, &current_key, sk);
-
-    if (success) {
-        //dbg_print_http_connection_info(&info.conn);
-        info.pid = pid_from_pid_tgid(id);
-        terminate_http_request_if_needed(&info, &current_key);
-        finish_ongoing_tcp_req(&info);
-        bpf_map_delete_elem(&connection_tracker, &info.conn);
-    }
-
-    bpf_map_delete_elem(&active_send_args, &id);
-    bpf_map_delete_elem(&active_send_sock_args, &sock_p);
-
+    preempt_guarded_tail_call_static(ctx, &tcp_close_jump_table, k_tail_tcp_close_finish);
     return 0;
 }
 
@@ -1053,6 +1094,32 @@ static __always_inline void mark_port_unreadable(u16 port) {
     }
 }
 
+SCRATCH_MEM_SIZED(recv_prefix_join, k_iovec_max_len + MIN_HTTP2_SIZE)
+
+static __always_inline int
+join_recv_prefix(const pid_connection_info_t *conn, unsigned char **buf, int size) {
+    recv_prefix_t *pending = bpf_map_lookup_elem(&recv_prefixes, conn);
+    if (!pending && size != 1) {
+        return size;
+    }
+    unsigned char *joined = recv_prefix_join_mem();
+    if (!joined) {
+        return 0;
+    }
+    recv_prefix_t empty = {};
+    recv_prefix_t *prefix = pending ? pending : &empty;
+    const u32 total = append_recv_prefix(prefix, *buf, size, joined, k_iovec_max_len);
+    if (!total) {
+        if (!pending) {
+            bpf_map_update_elem(&recv_prefixes, conn, prefix, BPF_ANY);
+        }
+        return 0;
+    }
+    bpf_map_delete_elem(&recv_prefixes, conn);
+    *buf = joined;
+    return total;
+}
+
 static __always_inline int return_recvmsg(void *ctx, struct sock *in_sock, u64 id, int copied_len) {
     recv_args_t *args = bpf_map_lookup_elem(&active_recv_args, &id);
 
@@ -1085,13 +1152,6 @@ static __always_inline int return_recvmsg(void *ctx, struct sock *in_sock, u64 i
         // Don't clean-up. This is called as backup path for the retprobe from
         // tcp_cleanup_rbuf which can come in with 0 bytes and we'll delete
         // the data for completing the request.
-        return 0;
-    }
-
-    // We want the full response (or most of it) to be able to parse HTTP headers/body.
-    // Avoid processing 0 or 1 byte packets (eg. AWS api's response to PUT requests) as
-    // they would end the request tracking prematurely.
-    if (copied_len <= 1) {
         return 0;
     }
 
@@ -1156,6 +1216,10 @@ static __always_inline int return_recvmsg(void *ctx, struct sock *in_sock, u64 i
             bpf_dbg_printk("buf=[%llx], copied_len=%d", buf, copied_len);
 
             if (buf && copied_len) {
+                copied_len = join_recv_prefix(&info, &buf, copied_len);
+                if (!copied_len) {
+                    goto done;
+                }
                 bpf_map_delete_elem(&active_recv_args, &id);
                 // doesn't return must be logically last statement
                 handle_buf_with_connection(ctx,
@@ -1396,7 +1460,8 @@ int GUARDED_PROG(obi_socket_flt_buf, struct __sk_buff *, skb) {
     }
 
     if (capture_buf) {
-        read_skb_bytes(skb, t_ctx->tcp.hdr_len, (void *)capture_buf, k_backup_buffer_len);
+        read_skb_bytes(
+            skb, t_ctx->tcp.hdr_len, (void *)capture_buf, k_backup_buffer_len, k_backup_buffer_len);
 
         bpf_d_printk("captured fallback buffer %s", capture_buf);
     }
@@ -1511,6 +1576,45 @@ int BPF_KPROBE_GUARDED(obi_kprobe_sys_exit, int status) {
     // A carrier dying without VirtualThread.unmount() must not leave a
     // stale entry that would re-key a future thread reusing this tid.
     bpf_map_delete_elem(&java_vt_threads, &task.p_key);
+
+    return 0;
+}
+
+// lets user space attribute forked children that exit before discovery polls them
+SEC("kprobe/wake_up_new_task")
+int BPF_KPROBE_GUARDED(obi_kprobe_wake_up_new_task, struct task_struct *task) {
+    (void)ctx;
+
+    if (!valid_pid(bpf_get_current_pid_tgid())) {
+        return 0;
+    }
+
+    // threads belong to an already known process
+    if (BPF_CORE_READ(task, pid) != BPF_CORE_READ(task, tgid)) {
+        return 0;
+    }
+
+    process_event_t event = {.type = k_event_type_process_fork, .ts = bpf_ktime_get_ns()};
+    task_pid_of(task, &event.pid);
+    task_pid(&event.parent);
+
+    events_ringbuf_output(&event, sizeof(event));
+
+    return 0;
+}
+
+SEC("kprobe/setup_new_exec")
+int BPF_KPROBE_GUARDED(obi_kprobe_setup_new_exec) {
+    (void)ctx;
+
+    if (!valid_pid(bpf_get_current_pid_tgid())) {
+        return 0;
+    }
+
+    process_event_t event = {.type = k_event_type_process_exec, .ts = bpf_ktime_get_ns()};
+    task_pid(&event.pid);
+
+    events_ringbuf_output(&event, sizeof(event));
 
     return 0;
 }

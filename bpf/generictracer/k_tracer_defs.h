@@ -7,13 +7,16 @@
 #include <bpfcore/bpf_helpers.h>
 
 #include <common/connection_info.h>
+#include <common/http_info.h>
 #include <common/http_types.h>
 #include <common/lw_thread.h>
 #include <common/preempt_guard.h>
 #include <common/protocol_http_helpers.h>
+#include <common/usdt.h>
 
 #include <generictracer/k_tracer_tailcall.h>
 #include <generictracer/protocol_common.h>
+#include <generictracer/skb_bytes.h>
 
 #include <generictracer/maps/protocol_cache.h>
 
@@ -117,41 +120,4 @@ static __always_inline void handle_light_weight_thread_buf(void *ctx,
     }
 
     preempt_guarded_tail_call(ctx, &jump_table, k_tail_handle_buf_with_args);
-}
-
-#define BUF_COPY_BLOCK_SIZE 16
-
-static __always_inline void
-read_skb_bytes(const void *skb, u32 offset, unsigned char *buf, const u32 len) {
-    const u32 max = offset + len;
-    int b = 0;
-    for (; b < (FULL_BUF_SIZE / BUF_COPY_BLOCK_SIZE); b++) {
-        if ((offset + (BUF_COPY_BLOCK_SIZE - 1)) >= max) {
-            break;
-        }
-        bpf_skb_load_bytes(
-            skb, offset, (void *)(&buf[b * BUF_COPY_BLOCK_SIZE]), BUF_COPY_BLOCK_SIZE);
-        offset += BUF_COPY_BLOCK_SIZE;
-    }
-
-    // Check the destination offset itself: loop widening can lose its relation to b.
-    u64 copied = b * BUF_COPY_BLOCK_SIZE;
-    bpf_clamp_umax(copied, FULL_BUF_SIZE);
-    if (copied >= len) {
-        return;
-    }
-
-    // This code is messy to make sure the eBPF verifier is happy. I had to cast to signed 64bit.
-    s64 remainder = (s64)max - (s64)offset;
-
-    if (remainder <= 0) {
-        return;
-    }
-
-    int remaining_to_copy = min(remainder, (BUF_COPY_BLOCK_SIZE - 1));
-    int space_in_buffer = len - copied;
-
-    if (remaining_to_copy <= space_in_buffer) {
-        bpf_skb_load_bytes(skb, offset, (void *)(&buf[copied]), remaining_to_copy);
-    }
 }

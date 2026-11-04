@@ -20,6 +20,8 @@
 #include <common/protocol_http_helpers.h>
 #include <common/protocol_http2_helpers.h>
 #include <common/protocol_tcp_helpers.h>
+#include <common/sampling.h>
+#include <common/sockaddr.h>
 #include <common/scratch_mem.h>
 #include <common/ssl_connection.h>
 #include <common/tc_common.h>
@@ -46,8 +48,10 @@
 #include <common/h2_tp_scan.h>
 
 #include <tpinjector/h2_parse.h>
+#include <tpinjector/sender_context.h>
 #include <tpinjector/inject_policy.h>
 #include <tpinjector/h2_write_transaction.h>
+#include <tpinjector/maps/instrumented_pids.h>
 #include <tpinjector/maps/sk_h2_flags.h>
 #include <tpinjector/maps/sk_h2_conn_flag.h>
 #include <tpinjector/maps/sk_tp_info_pid_map.h>
@@ -125,8 +129,13 @@ enum {
     k_inject_tcp_options = 1 << 1,  // Bit 1: inject TCP options
 };
 
+volatile const bool sk_msg_tracing_helpers = true;
+
 volatile const u32 inject_flags =
     k_inject_http_headers | k_inject_tcp_options; // default: both enabled
+
+// set when user space can backfill earlier connections; otherwise every client socket is enrolled
+volatile const bool enroll_instrumented_only = false;
 
 // Kind 25 is unassigned per IANA TCP Parameters registry (released 2000-12-18)
 // Better than experimental options (253-254) which must not be shipped as defaults
@@ -143,6 +152,7 @@ enum {
     k_tail_detect_h2,
     k_tail_sniff_h2,
     k_tail_parse_existing_tp,
+    k_tail_process_msg,
 };
 
 int obi_packet_extender_write_msg_tp(struct sk_msg_md *msg);
@@ -155,10 +165,11 @@ int obi_packet_extender_find_existing_h2_tp(struct sk_msg_md *msg);
 int obi_packet_extender_validate_h2_tp(struct sk_msg_md *msg);
 int obi_packet_extender_detect_h2(struct sk_msg_md *msg);
 int obi_packet_extender_sniff_h2(struct sk_msg_md *msg);
+int obi_packet_extender_process_msg(struct sk_msg_md *msg);
 
 struct {
     __uint(type, BPF_MAP_TYPE_PROG_ARRAY);
-    __uint(max_entries, 10);
+    __uint(max_entries, 11);
     __uint(key_size, sizeof(u32));
     __array(values, int(void *));
 } extender_jump_table SEC(".maps") = {
@@ -174,6 +185,7 @@ struct {
             [k_tail_detect_h2] = (void *)&obi_packet_extender_detect_h2,
             [k_tail_sniff_h2] = (void *)&obi_packet_extender_sniff_h2,
             [k_tail_parse_existing_tp] = (void *)&obi_packet_extender_parse_existing_tp,
+            [k_tail_process_msg] = (void *)&obi_packet_extender_process_msg,
         },
 };
 
@@ -199,7 +211,8 @@ typedef struct tailcall_ctx {
     bool tp_present;              // frame already carries a traceparent we cannot adopt
     bool scan_exhausted;          // retry budget ran out before the block was walked
     u8 opener;                    // first HPACK field byte of the frame being considered
-    u8 _pad[4];
+    bool msg_buffers_ready;
+    u8 _pad[3];
 } tailcall_ctx;
 
 SCRATCH_MEM(tailcall_ctx);
@@ -337,6 +350,7 @@ struct tp_option {
     u8 len;
     unsigned char trace_id[TRACE_ID_SIZE_BYTES];
     unsigned char span_id[SPAN_ID_SIZE_BYTES];
+    u8 flags;
 };
 
 static __always_inline const char *tp_string_from_opt(const struct tp_option *opt) {
@@ -489,10 +503,91 @@ static __always_inline connection_info_t sk_msg_extract_key_ip6(struct sk_msg_md
     return conn;
 }
 
+SCRATCH_MEM_TYPED(skmsg_sender_scratch, skmsg_sender_context_t)
+
+// SK_MSG runs before tcp_sendmsg, so capture identity and runtime context at the socket entry.
+SEC("kprobe/sock_sendmsg")
+int BPF_KPROBE(obi_kprobe_skmsg_sender, struct socket *sock) {
+    (void)ctx;
+    const u64 id = bpf_get_current_pid_tgid();
+    bpf_map_delete_elem(&skmsg_senders, &id);
+    if (sk_msg_tracing_helpers || !pid_in_filter(&instrumented_pids, id)) {
+        return 0;
+    }
+    struct sock *sk = BPF_CORE_READ(sock, sk);
+    skmsg_sender_context_t *sender = skmsg_sender_scratch_mem();
+    if (!sk || !sender) {
+        return 0;
+    }
+    __builtin_memset(sender, 0, sizeof(*sender));
+    if (!parse_sock_info(sk, &sender->p_conn.conn)) {
+        return 0;
+    }
+    const u16 orig_dport = sender->p_conn.conn.d_port;
+    sort_connection_info(&sender->p_conn.conn);
+    sender->p_conn.pid = pid_from_pid_tgid(id);
+    sender->id = id;
+    sender->started_ns = bpf_ktime_get_ns();
+    task_pid(&sender->pid);
+    const struct task_struct *task = (const struct task_struct *)bpf_get_current_task();
+    sender->process_start = BPF_CORE_READ(task, group_leader, start_time);
+    sender->parent.ts = sender->started_ns;
+    sender->parent.flags = 1;
+    sender->parent_status = find_parent_trace_for_client_request(
+        &sender->p_conn, orig_dport, k_lw_thread_none, &sender->parent);
+    bpf_map_update_elem(&skmsg_senders, &id, sender, BPF_ANY);
+    return 0;
+}
+
+SEC("kretprobe/sock_sendmsg")
+int BPF_KRETPROBE(obi_kretprobe_skmsg_sender) {
+    (void)ctx;
+    const u64 id = bpf_get_current_pid_tgid();
+    bpf_map_delete_elem(&skmsg_senders, &id);
+    return 0;
+}
+
+SEC("kprobe/tcp_connect")
+int BPF_KPROBE(obi_kprobe_skmsg_mark_socket, struct sock *sk) {
+    (void)ctx;
+    const u64 sock = (u64)sk;
+    bpf_map_delete_elem(&skmsg_client_owners, &sock);
+    if (!sk_msg_tracing_helpers && pid_in_filter(&instrumented_pids, bpf_get_current_pid_tgid())) {
+        bpf_map_update_elem(&skmsg_client_owners, &sock, &(u8){1}, BPF_ANY);
+    }
+    return 0;
+}
+
+SEC("kprobe/tcp_close")
+int BPF_KPROBE(obi_kprobe_skmsg_forget_socket, struct sock *sk) {
+    (void)ctx;
+    const u64 sock = (u64)sk;
+    bpf_map_delete_elem(&skmsg_client_owners, &sock);
+    return 0;
+}
+
+static __always_inline skmsg_sender_context_t *
+skmsg_current_sender(const pid_connection_info_t *conn) {
+    const u64 id = bpf_get_current_pid_tgid();
+    skmsg_sender_context_t *sender = bpf_map_lookup_elem(&skmsg_senders, &id);
+    return skmsg_sender_matches(sender, conn, id, bpf_ktime_get_ns(), max_transaction_time) ? sender
+                                                                                            : NULL;
+}
+
 static __always_inline void init_tp_ctx_parent_tp(tailcall_ctx *t_ctx) {
     t_ctx->parent_tp.ts = bpf_ktime_get_ns();
     t_ctx->parent_tp.flags = 1;
 
+    if (!sk_msg_tracing_helpers) {
+        t_ctx->has_parent_tp = 0;
+        const skmsg_sender_context_t *sender = skmsg_current_sender(&t_ctx->p_conn);
+        if (sender && sender->parent_status &&
+            should_be_in_same_transaction(&sender->parent, &t_ctx->parent_tp)) {
+            t_ctx->parent_tp = sender->parent;
+            t_ctx->has_parent_tp = sender->parent_status;
+        }
+        return;
+    }
     t_ctx->has_parent_tp = find_parent_trace_for_client_request(
         &t_ctx->p_conn, t_ctx->p_conn.conn.d_port, k_lw_thread_none, &t_ctx->parent_tp);
 }
@@ -516,11 +611,20 @@ static __always_inline bool create_trace_info(const tailcall_ctx *t_ctx, tp_info
 
         __builtin_memcpy(tp_p->tp.trace_id, t_ctx->parent_tp.trace_id, sizeof(tp_p->tp.trace_id));
         __builtin_memcpy(tp_p->tp.parent_id, t_ctx->parent_tp.span_id, sizeof(tp_p->tp.parent_id));
+        tp_p->tp.flags = t_ctx->parent_tp.flags;
     } else {
         bpf_dbg_printk("generating tp info");
 
         new_trace_id(&tp_p->tp);
         __builtin_memset(tp_p->tp.parent_id, 0, sizeof(tp_p->tp.parent_id));
+        if (sk_msg_tracing_helpers) {
+            sample_new_trace(&tp_p->tp);
+        } else {
+            const skmsg_sender_context_t *sender = skmsg_current_sender(&t_ctx->p_conn);
+            if (sender) {
+                sample_new_trace_for_pid(&tp_p->tp, &sender->pid);
+            }
+        }
     }
 
     return true;
@@ -530,20 +634,54 @@ static __always_inline void bpf_sock_ops_set_flags(struct bpf_sock_ops *skops, u
     bpf_sock_ops_cb_flags_set(skops, skops->bpf_sock_ops_cb_flags | flags);
 }
 
+// sock_ops gets bpf_get_current_pid_tgid only from 6.10, and the filter reads just the tgid half
+static __always_inline bool owner_instrumented(void) {
+    const struct task_struct *task = (const struct task_struct *)bpf_get_current_task();
+    return pid_in_filter(&instrumented_pids, (u64)BPF_CORE_READ(task, tgid) << 32) != 0;
+}
+
+// connect() runs in the owner's context, unlike the established callback: this storage is the mark
+static __always_inline void bpf_sock_ops_connect_cb(struct bpf_sock_ops *skops) {
+    struct bpf_sock *sk = skops->sk;
+
+    if (!sk_msg_tracing_helpers || !enroll_instrumented_only || !sk || !owner_instrumented()) {
+        return;
+    }
+
+    const u64 cookie = bpf_get_socket_cookie(skops);
+    bpf_sk_storage_get(&socket_cookie, sk, (void *)&cookie, BPF_SK_STORAGE_GET_F_CREATE);
+}
+
 // Helper that writes in the sock map for a sock_ops program
 static __always_inline void bpf_sock_ops_active_est_cb(struct bpf_sock_ops *skops) {
+    // armed on every client socket in tcp mode: a backfilled socket is past this callback
+    if (inject_flags & k_inject_tcp_options) {
+        bpf_sock_ops_set_flags(skops, BPF_SOCK_OPS_WRITE_HDR_OPT_CB_FLAG);
+    }
+
     const u64 cookie = bpf_get_socket_cookie(skops);
     struct bpf_sock *sk = skops->sk;
 
-    if (sk) {
+    if (!sk) {
+        return;
+    }
+
+    if (!sk_msg_tracing_helpers) {
+        const u64 sock = (u64)sk;
+        if (!bpf_map_lookup_elem(&skmsg_client_owners, &sock)) {
+            return;
+        }
         bpf_sk_storage_get(&socket_cookie, sk, (void *)&cookie, BPF_SK_STORAGE_GET_F_CREATE);
+    } else if (!enroll_instrumented_only) {
+        bpf_sk_storage_get(&socket_cookie, sk, (void *)&cookie, BPF_SK_STORAGE_GET_F_CREATE);
+    } else if (!bpf_sk_storage_get(&socket_cookie, sk, NULL, 0)) {
+        return;
     }
 
     if (bpf_sock_hash_update(skops, &sock_dir, (void *)&cookie, BPF_ANY) == 0) {
         bpf_map_update_elem(&tracked_sock_cookies, &cookie, &(u8){1}, BPF_ANY);
         bpf_sock_ops_set_flags(skops, BPF_SOCK_OPS_STATE_CB_FLAG);
     }
-    bpf_sock_ops_set_flags(skops, BPF_SOCK_OPS_WRITE_HDR_OPT_CB_FLAG);
 }
 
 // every full-socket death path goes through tcp_set_state(TCP_CLOSE), which is
@@ -566,6 +704,9 @@ static __always_inline void bpf_sock_ops_passive_est_cb(struct bpf_sock_ops *sko
 }
 
 static __always_inline void bpf_sock_ops_opt_len_cb(struct bpf_sock_ops *skops) {
+    if (!(inject_flags & k_inject_tcp_options)) {
+        return;
+    }
     struct bpf_sock *sk = skops->sk;
 
     if (!sk) {
@@ -587,6 +728,9 @@ static __always_inline void bpf_sock_ops_opt_len_cb(struct bpf_sock_ops *skops) 
 }
 
 static __always_inline void bpf_sock_ops_write_hdr_cb(struct bpf_sock_ops *skops) {
+    if (!(inject_flags & k_inject_tcp_options)) {
+        return;
+    }
     struct bpf_sock *sk = skops->sk;
 
     if (!sk) {
@@ -608,6 +752,7 @@ static __always_inline void bpf_sock_ops_write_hdr_cb(struct bpf_sock_ops *skops
 
     __builtin_memcpy(opt.trace_id, tp_pid->tp.trace_id, sizeof(opt.trace_id));
     __builtin_memcpy(opt.span_id, tp_pid->tp.span_id, sizeof(opt.span_id));
+    opt.flags = tp_pid->tp.flags;
 
     const long ret = bpf_store_hdr_opt(skops, &opt, sizeof(opt), 0);
 
@@ -656,6 +801,8 @@ static __always_inline void bpf_sock_ops_parse_hdr_cb(struct bpf_sock_ops *skops
 
     __builtin_memcpy(tp.tp.trace_id, opt.trace_id, sizeof(tp.tp.trace_id));
     __builtin_memcpy(tp.tp.span_id, opt.span_id, sizeof(tp.tp.span_id));
+    // older OBI versions send the option without the flags byte
+    tp.tp.flags = (ret < (long)sizeof(opt)) ? k_flag_sampled : opt.flags;
 
     connection_info_t conn = get_connection_info_ops(skops);
     sort_connection_info(&conn);
@@ -664,7 +811,7 @@ static __always_inline void bpf_sock_ops_parse_hdr_cb(struct bpf_sock_ops *skops
     bpf_map_update_elem(&incoming_trace_map, &conn, &tp, BPF_ANY);
 }
 
-// Tracks all outgoing sockets (BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB)
+// Tracks outgoing sockets (BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB) of instrumented processes
 // We don't track incoming, those would be BPF_SOCK_OPS_PASSIVE_ESTABLISHED_CB
 SEC("sockops")
 int obi_sockmap_tracker(struct bpf_sock_ops *skops) {
@@ -675,6 +822,9 @@ int obi_sockmap_tracker(struct bpf_sock_ops *skops) {
     }
 
     switch (skops->op) {
+    case BPF_SOCK_OPS_TCP_CONNECT_CB:
+        bpf_sock_ops_connect_cb(skops);
+        break;
     case BPF_SOCK_OPS_ACTIVE_ESTABLISHED_CB:
         bpf_sock_ops_active_est_cb(skops);
         break;
@@ -718,6 +868,32 @@ static __always_inline void invalidate_msg_buffers(const egress_key_t *e_key) {
 // limit when we eventually add HTTP2/gRPC support.
 // Populates msg_buffers / msg_buffer_mem for the kprobe on tcp_sendmsg,
 // which runs after sk_msg. Bails on size=0, SSL, or allocation failure.
+static __always_inline u32 copy_skmsg_window(unsigned char *dst,
+                                             const unsigned char *data,
+                                             const unsigned char *end,
+                                             const u32 capacity) {
+    enum { chunk_size = 32 };
+    u32 copied = 0;
+#pragma clang loop unroll(disable)
+    for (u32 i = 0; i < capacity / chunk_size; i++) {
+        if (data + (i + 1) * chunk_size > end) {
+            break;
+        }
+        __builtin_memcpy(dst + i * chunk_size, data + i * chunk_size, chunk_size);
+        copied = (i + 1) * chunk_size;
+    }
+    bpf_clamp_umax(copied, capacity);
+#pragma clang loop unroll(disable)
+    for (u32 i = 0; i < chunk_size - 1; i++) {
+        if (copied >= capacity || data + copied + 1 > end) {
+            break;
+        }
+        dst[copied] = data[copied];
+        copied++;
+    }
+    return copied;
+}
+
 static __always_inline bool fill_msg_buffers(struct sk_msg_md *msg,
                                              const pid_connection_info_t *p_conn,
                                              const egress_key_t *e_key) {
@@ -743,12 +919,6 @@ static __always_inline bool fill_msg_buffers(struct sk_msg_md *msg,
         .cpu_id = bpf_get_smp_processor_id(),
     };
 
-    // fallback_buf is a fixed k_kprobes_http2_buf_size array, smaller than window's
-    // ceiling, so it needs its own, tighter clamp.
-    u32 fallback_bytes = window;
-    bpf_clamp_umax(fallback_bytes, k_kprobes_http2_buf_size);
-    bpf_probe_read_kernel(msg_buf.fallback_buf, fallback_bytes, msg->data);
-
     unsigned char *msg_ptr = bpf_map_lookup_elem(&msg_buffer_mem, &(u32){0});
 
     if (!msg_ptr) {
@@ -757,11 +927,20 @@ static __always_inline bool fill_msg_buffers(struct sk_msg_md *msg,
         return false;
     }
 
-    msg_ptr[0] = 0;
-    // clamp again at the use: verifiers before 5.10 drop the bound when the value
-    // is spilled to the stack between the clamp above and this read
-    bpf_clamp_umax(window, k_msg_buffer_size_max);
-    bpf_probe_read_kernel(msg_ptr, window, msg->data);
+    if (sk_msg_tracing_helpers) {
+        u32 fallback_bytes = window;
+        bpf_clamp_umax(fallback_bytes, k_kprobes_http2_buf_size);
+        bpf_probe_read_kernel(msg_buf.fallback_buf, fallback_bytes, msg->data);
+        msg_ptr[0] = 0;
+        bpf_clamp_umax(window, k_msg_buffer_size_max);
+        bpf_probe_read_kernel(msg_ptr, window, msg->data);
+    } else {
+        bpf_memset(msg_buf.fallback_buf, 0, sizeof(msg_buf.fallback_buf));
+        copy_skmsg_window(
+            msg_buf.fallback_buf, msg->data, msg->data_end, sizeof(msg_buf.fallback_buf));
+        window = copy_skmsg_window(msg_ptr, msg->data, msg->data_end, k_msg_buffer_size_max);
+        msg_buf.real_size = window;
+    }
     bpf_map_update_elem(&msg_buffer_mem, &(u32){0}, msg_ptr, BPF_ANY);
 
     // We setup any call that looks like HTTP request to be extended.
@@ -824,7 +1003,18 @@ static __always_inline bool consume_go_h2_owned_stream(struct sk_msg_md *msg, u3
             },
         .stream_id = stream_id,
     };
-    set_go_h2_owned_stream_process_identity(&key);
+    if (sk_msg_tracing_helpers) {
+        set_go_h2_owned_stream_process_identity(&key);
+    } else {
+        pid_connection_info_t conn = key.p_conn;
+        sort_connection_info(&conn.conn);
+        const skmsg_sender_context_t *sender = skmsg_current_sender(&conn);
+        if (!sender) {
+            return false;
+        }
+        key.process_start_lo = (u32)sender->process_start;
+        key.process_start_hi = (u32)(sender->process_start >> 32);
+    }
 
     if (!fresh_go_h2_owned_stream(&key, bpf_ktime_get_ns())) {
         return false;
@@ -1235,6 +1425,8 @@ static __always_inline bool handle_existing_tp_pid(struct sk_msg_md *msg,
     return false;
 }
 
+static __always_inline int process_skmsg(struct sk_msg_md *msg);
+
 // Sock_msg program which detects packets where it should add space for
 // the 'Traceparent' string. It extends the HTTP header and writes the
 // Traceparent string.
@@ -1266,6 +1458,10 @@ int obi_packet_extender(struct sk_msg_md *msg) {
     bpf_memset(&t_ctx->h2_framing, 0, sizeof(t_ctx->h2_framing));
     t_ctx->go_grpc_conn = false;
 
+    if (!sk_msg_tracing_helpers && !skmsg_current_sender(&t_ctx->p_conn)) {
+        return SK_PASS;
+    }
+
     // skip H2 here — it uses HPACK for per-stream traceparents
     tp_info_pid_t *tp_pid = get_tp_info_pid(&e_key);
     if (tp_pid && !is_h2_socket(msg) &&
@@ -1273,22 +1469,29 @@ int obi_packet_extender(struct sk_msg_md *msg) {
         return SK_PASS;
     }
 
-    if (is_go_grpc_client_conn(&t_ctx->p_conn)) {
-        bpf_msg_pull_data(msg, 0, msg->size, 0);
-        fill_msg_buffers(msg, &t_ctx->p_conn, &e_key);
-        // per-stream decision in the h2 chain: inject only streams the uprobe left written=0
-        t_ctx->go_grpc_conn = true;
+    t_ctx->go_grpc_conn = is_go_grpc_client_conn(&t_ctx->p_conn) != NULL;
+    if (sk_msg_tracing_helpers && !t_ctx->go_grpc_conn && !valid_pid(id)) {
+        return SK_PASS;
+    }
+    bpf_msg_pull_data(msg, 0, msg->size, 0);
+    t_ctx->msg_buffers_ready = fill_msg_buffers(msg, &t_ctx->p_conn, &e_key);
+    if (!sk_msg_tracing_helpers) {
+        // End the copy's verifier state before walking protocol headers.
+        bpf_tail_call_static(msg, &extender_jump_table, k_tail_process_msg);
+        return SK_PASS;
+    }
+    return process_skmsg(msg);
+}
+
+static __always_inline int process_skmsg(struct sk_msg_md *msg) {
+    tailcall_ctx *t_ctx = tailcall_ctx_mem();
+    if (!t_ctx) {
+        return SK_PASS;
+    }
+    if (t_ctx->go_grpc_conn) {
         bpf_tail_call_static(msg, &extender_jump_table, k_tail_detect_h2);
         return SK_PASS;
     }
-
-    if (!valid_pid(id)) {
-        return SK_PASS;
-    }
-
-    bpf_msg_pull_data(msg, 0, msg->size, 0);
-    const bool msg_buffers_ready = fill_msg_buffers(msg, &t_ctx->p_conn, &e_key);
-
     if (is_h2_socket(msg)) {
         bpf_tail_call_static(msg, &extender_jump_table, k_tail_detect_h2);
         return SK_PASS;
@@ -1296,10 +1499,12 @@ int obi_packet_extender(struct sk_msg_md *msg) {
 
     // on a bail (SSL, etc.) msg_buffer_mem is stale — the HTTP detector would
     // match a prior request and inject into this connection
-    if (!msg_buffers_ready || msg->size <= MIN_HTTP_SIZE) {
+    if (!t_ctx->msg_buffers_ready || msg->size <= MIN_HTTP_SIZE) {
         return SK_PASS;
     }
 
+    const connection_info_t conn = get_connection_info(msg);
+    const u64 id = bpf_get_current_pid_tgid();
     bpf_dbg_printk("MSG=%llx:%d ->", conn.s_ip[3], conn.s_port);
     bpf_dbg_printk("MSG TO=%llx:%d", conn.d_ip[3], conn.d_port);
     bpf_dbg_printk("MSG SIZE=%u", msg->size);
@@ -1314,6 +1519,11 @@ int obi_packet_extender(struct sk_msg_md *msg) {
 
     wrap_http2_traceparent(msg, &t_ctx->p_conn);
     return SK_PASS;
+}
+
+SEC("sk_msg")
+int obi_packet_extender_process_msg(struct sk_msg_md *msg) {
+    return process_skmsg(msg);
 }
 
 //k_tail_write_msg_traceparent
@@ -1386,7 +1596,9 @@ int obi_packet_extender_find_existing_tp(struct sk_msg_md *msg) {
 
     unsigned char *b = msg->data;
     const unsigned char *e = msg->data_end;
-    unsigned char *ptr = b + (niter * k_http1_scan_chunk_size);
+    u64 offset = niter & (k_http1_max_scan_iters - 1);
+    offset *= k_http1_scan_chunk_size;
+    unsigned char *ptr = b + offset;
 
     if (ptr + 1 > e) {
         return SK_PASS;
@@ -1394,11 +1606,8 @@ int obi_packet_extender_find_existing_tp(struct sk_msg_md *msg) {
 
     bpf_dbg_printk("looking for traceparent header (iter=%u)", niter);
 
-    u32 data_size = e - ptr;
-
-    if (data_size > k_http1_scan_chunk_size) {
-        data_size = k_http1_scan_chunk_size;
-    }
+    u64 data_size = e - ptr;
+    bpf_clamp_umax(data_size, k_http1_scan_chunk_size);
 
     for (u32 i = 0; i < data_size; ++i) {
         if ((ptr + TP_SIZE + 1 > e) || is_eoh(ptr)) {
@@ -1482,7 +1691,6 @@ int obi_packet_extender_parse_existing_tp(struct sk_msg_md *msg) {
     assign_parent_tp(t_ctx, &tp_p->tp, span_id);
 
     tp_p->tp.ts = bpf_ktime_get_ns();
-    tp_p->tp.flags = 1;
     tp_p->valid = 1;
     tp_p->written = 1;
     tp_p->pid = t_ctx->p_conn.pid;
@@ -1712,7 +1920,7 @@ static __always_inline bool decode_tp_value(const unsigned char *val, tp_info_t 
     }
     decode_hex(tp->trace_id, &val[k_tp_val_trace_id_start], TRACE_ID_CHAR_LEN);
     decode_hex(tp->span_id, &val[k_tp_val_span_id_start], SPAN_ID_CHAR_LEN);
-    tp->flags = 1;
+    decode_hex((unsigned char *)&tp->flags, &val[k_tp_val_flags_start], FLAGS_CHAR_LEN);
     return true;
 }
 

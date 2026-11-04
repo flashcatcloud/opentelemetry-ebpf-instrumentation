@@ -24,6 +24,12 @@ static inline long bpf_loop(unsigned int nr_loops,
 
 #include <generictracer/hpack_traceparent_parse.h>
 
+static bool use_bpf_loop;
+#define try_parse_tp_huffman_value(data, len, huff, w, out, tp)                                    \
+    try_parse_tp_huffman_value_with_loop(data, len, huff, w, out, tp, use_bpf_loop)
+#define find_hpack_traceparent_huffman(data, off, len, scan)                                       \
+    find_hpack_traceparent_huffman_with_loop(data, off, len, scan, use_bpf_loop)
+
 // W3C v0 fixture value
 static const unsigned char TP_VALUE[k_hpack_value_len_tp + 1] =
     "00-0123456789abcdeffedcba9876543210-89abcdef01234567-01";
@@ -398,15 +404,18 @@ static void test_decoy_candidates_before_real_value(void) {
     u8 decoded = 0;
     u8 rescans = 0;
 
-    while (find_hpack_traceparent_huffman(buf, 0, total, &scan)) {
+    while (find_hpack_traceparent_huffman(buf, 0, total, &scan) || scan.more) {
+        if (!scan.count) {
+            continue;
+        }
         for (u8 i = 0; i < scan.count && !decoded; i++) {
             h2_tp_huff_candidate_t huff = {.at = scan.at[i], .len = scan.len[i]};
             decoded = try_parse_tp_huffman_value(buf, total, &huff, HUFF_W, HUFF_OUT, &tp);
         }
-        if (decoded || scan.count < k_h2_tp_huff_max_candidates) {
+        if (decoded || (use_bpf_loop && scan.count < k_h2_tp_huff_max_candidates)) {
             break;
         }
-        scan.resume = scan.at[k_h2_tp_huff_max_candidates - 1];
+        scan.resume = scan.at[scan.count - 1];
         rescans++;
     }
 
@@ -429,25 +438,42 @@ static void test_plain_value_wins_over_huffman_lookalike(void) {
     assert_tp_match(&tp);
 }
 
+// an upstream that decided not to sample must keep that decision for the spans OBI derives
+static void test_unsampled_flags_are_kept(void) {
+    unsigned char buf[k_kprobes_http2_buf_size] = {0};
+    const u32 len = build_plain_entry(buf);
+    buf[k_hpack_tp_val_offset + k_tp_val_flags_start + 1] = '0';
+
+    tp_info_t tp = {0};
+    h2_tp_huff_candidate_t huff = {0};
+    assertf(parse_hpack_traceparent(buf, len, &tp, &huff) == 1, "unsampled value parses");
+    assertf(tp.flags == 0, "flags != 0");
+}
+
 int main(void) {
-    test_plain_name_baseline();
-    test_huffman_name_baseline();
-    test_plain_name_huffman_value();
-    test_indexed_name_huffman_value();
-    test_decoy_candidates_before_real_value();
-    test_plain_value_wins_over_huffman_lookalike();
-    test_huffman_name_huffman_value();
-    test_huffman_value_every_prefix();
-    test_corrupt_huffman_value_rejected();
-    test_every_literal_prefix();
-    test_indexed_name_via_value_pattern();
-    test_value_pattern_at_offset();
-    test_no_false_positive_random();
-    test_reject_dash_lookalike();
-    test_reject_non_hex_ids();
-    test_decoys_before_real_value();
-    test_value_at_late_position();
-    test_short_buffer();
+    for (u32 mode = 0; mode < 2; mode++) {
+        use_bpf_loop = mode != 0;
+
+        test_plain_name_baseline();
+        test_unsampled_flags_are_kept();
+        test_huffman_name_baseline();
+        test_plain_name_huffman_value();
+        test_indexed_name_huffman_value();
+        test_decoy_candidates_before_real_value();
+        test_plain_value_wins_over_huffman_lookalike();
+        test_huffman_name_huffman_value();
+        test_huffman_value_every_prefix();
+        test_corrupt_huffman_value_rejected();
+        test_every_literal_prefix();
+        test_indexed_name_via_value_pattern();
+        test_value_pattern_at_offset();
+        test_no_false_positive_random();
+        test_reject_dash_lookalike();
+        test_reject_non_hex_ids();
+        test_decoys_before_real_value();
+        test_value_at_late_position();
+        test_short_buffer();
+    }
     printf("OK: %s\n", __FILE__);
     return 0;
 }

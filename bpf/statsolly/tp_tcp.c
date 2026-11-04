@@ -12,6 +12,7 @@
 
 #include <logger/bpf_dbg.h>
 
+#include <statsolly/failed_conn_port.h>
 #include <statsolly/types.h>
 #include <statsolly/maps/stats_events.h>
 #include <statsolly/maps/sock_role.h>
@@ -87,9 +88,10 @@ const tcp_successful_connection_t *unused_tcp_successful_connection __attribute_
 // on the same tracepoint. BPF programs on a tracepoint run FIFO, so the probe(s) read sock_role first,
 // then this program deletes it. Reversing the order would cause tcp_failed_conn or any other probes
 // to see a stale NULL on the same TCP_CLOSE event.
+// The protocol field changed from u8 to u16; relocate its width as well as its offset.
 SEC("tracepoint/sock/inet_sock_set_state")
 int obi_stats_tp_inet_sock_set_state_conn_role(struct trace_event_raw_inet_sock_set_state *args) {
-    if (args->protocol != IPPROTO_TCP) {
+    if (BPF_CORE_READ_BITFIELD_PROBED(args, protocol) != IPPROTO_TCP) {
         return 0;
     }
 
@@ -113,7 +115,7 @@ int obi_stats_tp_inet_sock_set_state_conn_role(struct trace_event_raw_inet_sock_
 SEC("tracepoint/sock/inet_sock_set_state")
 int obi_stats_tp_inet_sock_set_state_tcp_failed_connection(
     struct trace_event_raw_inet_sock_set_state *args) {
-    if (args->protocol != IPPROTO_TCP) {
+    if (BPF_CORE_READ_BITFIELD_PROBED(args, protocol) != IPPROTO_TCP) {
         return 0;
     }
 
@@ -140,7 +142,7 @@ int obi_stats_tp_inet_sock_set_state_tcp_failed_connection(
     const u8 reason = sk_err_to_reason(err);
 
     connection_info_t conn;
-    if (!parse_sock_info(sk, &conn)) {
+    if (!parse_failed_sock_info(sk, args->oldstate, &conn)) {
         return 0;
     }
 
@@ -174,7 +176,7 @@ int obi_stats_tp_inet_sock_set_state_tcp_failed_connection(
 SEC("tracepoint/sock/inet_sock_set_state")
 int obi_stats_tp_inet_sock_set_state_tcp_successful_connection(
     struct trace_event_raw_inet_sock_set_state *args) {
-    if (args->protocol != IPPROTO_TCP) {
+    if (BPF_CORE_READ_BITFIELD_PROBED(args, protocol) != IPPROTO_TCP) {
         return 0;
     }
 
