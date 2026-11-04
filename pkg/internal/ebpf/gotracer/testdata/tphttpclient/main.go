@@ -22,16 +22,29 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 )
 
 // A valid W3C traceparent used by the WITH_TP mode.
 const staticTraceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
 
 func main() {
+	first := make(chan struct{})
+	second := make(chan struct{})
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "%d", len(r.Header.Values("Traceparent")))
 	})
+	holdRequest := func(release <-chan struct{}) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			count := len(r.Header.Values("Traceparent"))
+			fmt.Printf("TP_COUNT=%d\n", count)
+			<-release
+			fmt.Fprintf(w, "%d", count)
+		}
+	}
+	mux.HandleFunc("/first", holdRequest(first))
+	mux.HandleFunc("/second", holdRequest(second))
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "listen error: %v\n", err)
@@ -42,6 +55,17 @@ func main() {
 	// http:// with the default transport keeps this on HTTP/1.1, exercising
 	// OBI's net/http header_writeSubset injection path.
 	url := "http://" + ln.Addr().String() + "/"
+	sharedHeader := make(http.Header)
+	sendHeldRequest := func(path string) {
+		// A rewindable body makes the transport shallow-copy the Request.
+		req, err := http.NewRequest(http.MethodPost, url+path, strings.NewReader("body"))
+		if err != nil {
+			report("", err)
+			return
+		}
+		req.Header = sharedHeader
+		report(responseCount(req))
+	}
 
 	fmt.Println("READY")
 
@@ -52,6 +76,14 @@ func main() {
 			report(doRequest(url, true))
 		case "NO_TP":
 			report(doRequest(url, false))
+		case "HOLD_FIRST":
+			go sendHeldRequest("first")
+		case "HOLD_SECOND":
+			go sendHeldRequest("second")
+		case "RELEASE_FIRST":
+			close(first)
+		case "RELEASE_SECOND":
+			close(second)
 		case "EXIT":
 			return
 		}
@@ -74,6 +106,10 @@ func doRequest(url string, withTraceparent bool) (string, error) {
 	if withTraceparent {
 		req.Header.Set("Traceparent", staticTraceparent)
 	}
+	return responseCount(req)
+}
+
+func responseCount(req *http.Request) (string, error) {
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", err

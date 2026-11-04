@@ -692,7 +692,31 @@ int GUARDED_PROG(obi_uprobe_ServeHTTPReturns, struct pt_regs *, ctx) {
 }
 
 /* HTTP Client. We expect to see HTTP client in both HTTP server and gRPC server calls.*/
-static __always_inline void roundTripStartHelper(struct pt_regs *ctx) {
+static __always_inline void delete_header_request(const go_addr_key_t *g_key,
+                                                  const http_func_invocation_t *invocation) {
+    if (!invocation || !invocation->header_request_addr) {
+        return;
+    }
+
+    go_addr_key_t key = {.pid = g_key->pid, .addr = invocation->header_request_addr};
+    const header_request_t *owner = bpf_map_lookup_elem(&header_req_map, &key);
+    if (owner && owner->goroutine == g_key->addr &&
+        owner->started_ns == invocation->start_monotime_ns) {
+        bpf_map_delete_elem(&header_req_map, &key);
+    }
+}
+
+static __always_inline void publish_header_request(const go_addr_key_t *g_key,
+                                                   const http_func_invocation_t *invocation) {
+    go_addr_key_t key = {.pid = g_key->pid, .addr = invocation->header_request_addr};
+    const header_request_t owner = {
+        .goroutine = g_key->addr,
+        .started_ns = invocation->start_monotime_ns,
+    };
+    bpf_map_update_elem(&header_req_map, &key, &owner, BPF_ANY);
+}
+
+static __always_inline void roundTripStartHelper(struct pt_regs *ctx, bool http2) {
     void *goroutine_addr = GOROUTINE_PTR(ctx);
 
     bpf_dbg_printk("goroutine_addr=%lx", goroutine_addr);
@@ -775,37 +799,24 @@ static __always_inline void roundTripStartHelper(struct pt_regs *ctx) {
     bpf_dbg_printk("host=%s", trace->host);
     bpf_dbg_printk("scheme=%s", trace->scheme);
 
-    // Write event
+    // HTTP/1 binds the transport's final request at persistConn.roundTrip.
+    if (http2 && g_bpf_header_propagation) {
+        invocation.header_request_addr = (u64)req;
+    }
+
     if (bpf_map_update_elem(&go_ongoing_http_client_requests, &g_key, &invocation, BPF_ANY)) {
         bpf_dbg_printk("can't update http client map element");
+    } else if (invocation.header_request_addr) {
+        publish_header_request(&g_key, &invocation);
     }
 
     bpf_map_update_elem(&ongoing_http_client_requests_data, &g_key, trace, BPF_ANY);
-
-    if (g_bpf_header_propagation) {
-        void *headers_ptr = 0;
-        bpf_probe_read(&headers_ptr,
-                       sizeof(headers_ptr),
-                       (void *)(req + go_offset_of(ot, (go_offset){.v = _req_header_ptr_pos})));
-        bpf_dbg_printk(
-            "goroutine_addr=%lx, req=%llx, headers_ptr=%llx", goroutine_addr, req, headers_ptr);
-
-        if (headers_ptr) {
-            go_addr_key_t header_key = {};
-            go_addr_key_from_id(&header_key, headers_ptr);
-            const header_request_t owner = {
-                .goroutine = (u64)goroutine_addr,
-                .started_ns = invocation.start_monotime_ns,
-            };
-            bpf_map_update_elem(&header_req_map, &header_key, &owner, BPF_ANY);
-        }
-    }
 }
 
 SEC("uprobe/roundTrip")
 int GUARDED_PROG(obi_uprobe_roundTrip, struct pt_regs *, ctx) {
     bpf_dbg_printk("=== uprobe/roundTrip ===");
-    roundTripStartHelper(ctx);
+    roundTripStartHelper(ctx, false);
     return 0;
 }
 
@@ -949,6 +960,7 @@ int GUARDED_PROG(obi_uprobe_roundTripReturn, struct pt_regs *, ctx) {
 done:
     cleanup_http2_owned_stream(&g_key);
     bpf_map_delete_elem(&http2_header_observations, &g_key);
+    delete_header_request(&g_key, invocation);
     bpf_map_delete_elem(&go_ongoing_http_client_requests, &g_key);
     bpf_map_delete_elem(&ongoing_http_client_requests_data, &g_key);
     bpf_map_delete_elem(&ongoing_client_connections, &g_key);
@@ -980,9 +992,9 @@ struct {
     __uint(max_entries, MAX_CONCURRENT_REQUESTS);
 } ongoing_write_subsets SEC(".maps");
 
-static __always_inline http_func_invocation_t *request_for_headers(void *headers, u64 *request_go) {
+static __always_inline http_func_invocation_t *request_for_headers(void *req, u64 *request_go) {
     go_addr_key_t key = {};
-    go_addr_key_from_id(&key, headers);
+    go_addr_key_from_id(&key, req);
     const header_request_t *owner = bpf_map_lookup_elem(&header_req_map, &key);
     if (!owner) {
         return NULL;
@@ -990,7 +1002,8 @@ static __always_inline http_func_invocation_t *request_for_headers(void *headers
     const header_request_t identity = *owner;
     key.addr = identity.goroutine;
     http_func_invocation_t *inv = bpf_map_lookup_elem(&go_ongoing_http_client_requests, &key);
-    if (!inv || inv->start_monotime_ns != identity.started_ns) {
+    if (!inv || inv->start_monotime_ns != identity.started_ns ||
+        inv->header_request_addr != (u64)req) {
         return NULL;
     }
     *request_go = identity.goroutine;
@@ -1018,7 +1031,7 @@ int GUARDED_PROG(obi_uprobe_httpRequestWrite, struct pt_regs *, ctx) {
         return 0;
     }
     u64 request_go = 0;
-    const http_func_invocation_t *request = request_for_headers(header_addr, &request_go);
+    const http_func_invocation_t *request = request_for_headers(req, &request_go);
     if (!request) {
         return 0;
     }
@@ -1470,13 +1483,8 @@ int GUARDED_PROG(obi_uprobe_http2ClientStreamEncodeAndWriteHeaders, struct pt_re
     http2_header_observation_t observation = {};
 
     void *req = (void *)GO_PARAM2(ctx);
-    off_table_t *ot = get_offsets_table();
-    const u64 header_pos = go_offset_of(ot, (go_offset){.v = _req_header_ptr_pos});
-    void *headers = 0;
-    if (req && header_pos != (u64)-1 &&
-        bpf_probe_read_user(&headers, sizeof(headers), (unsigned char *)req + header_pos) == 0 &&
-        headers) {
-        request_for_headers(headers, &observation.request_go);
+    if (req) {
+        request_for_headers(req, &observation.request_go);
     }
 
     bpf_map_update_elem(&http2_header_observations, &g_key, &observation, BPF_ANY);
@@ -1522,7 +1530,7 @@ int GUARDED_PROG(obi_uprobe_http2RoundTrip, struct pt_regs *, ctx) {
     bpf_dbg_printk("=== uprobe/http2RoundTrip ===");
     // we use the usual start helper, just like for normal http calls, but we later save
     // more context, like the streamID
-    roundTripStartHelper(ctx);
+    roundTripStartHelper(ctx, true);
 
     return 0;
 }
@@ -2212,6 +2220,19 @@ int GUARDED_PROG(obi_uprobe_persistConnRoundTrip, struct pt_regs *, ctx) {
     if (!invocation) {
         bpf_dbg_printk("can't find invocation info for client call, this might be a bug");
         return 0;
+    }
+
+    if (g_bpf_header_propagation) {
+        // transportRequest embeds *http.Request as its first field. The
+        // transport may shallow-copy the original request to rewind its body.
+        void *req = NULL;
+        if (bpf_probe_read_user(&req, sizeof(req), GO_PARAM2(ctx)) == 0 && req) {
+            if (invocation->header_request_addr != (u64)req) {
+                delete_header_request(&g_key, invocation);
+                invocation->header_request_addr = (u64)req;
+            }
+            publish_header_request(&g_key, invocation);
+        }
     }
 
     void *pc_ptr = GO_PARAM1(ctx);

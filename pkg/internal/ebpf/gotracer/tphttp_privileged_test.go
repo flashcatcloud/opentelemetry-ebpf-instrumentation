@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -73,6 +74,46 @@ func TestHTTP1ClientTraceparentNotDuplicated(t *testing.T) {
 		"OBI must not append a second traceparent when the client already wrote one")
 }
 
+func TestHTTP1ClientHeaderRequestCleanup(t *testing.T) {
+	require.Equal(t, 0, os.Geteuid(), "privileged eBPF test must run as root")
+	require.NoError(t, rlimit.RemoveMemlock())
+	if !ebpfcommon.SupportsContextPropagationWithProbe(slog.Default()) {
+		t.Skip("kernel does not support bpf_probe_write_user context propagation")
+	}
+
+	send, associations := startHTTPClientTargetWithMode(t, buildHTTPClientTarget(t),
+		config.ContextPropagationHeaders, "TP_COUNT=")
+	require.NotNil(t, associations)
+
+	keys := func() []BpfGoAddrKeyT {
+		t.Helper()
+		var result []BpfGoAddrKeyT
+		var key BpfGoAddrKeyT
+		var owner BpfHeaderRequestT
+		entries := associations.Iterate()
+		for entries.Next(&key, &owner) {
+			result = append(result, key)
+		}
+		require.NoError(t, entries.Err())
+		return result
+	}
+
+	require.Equal(t, "1", send(t, "HOLD_FIRST"))
+	first := keys()
+	require.Len(t, first, 1)
+
+	require.Equal(t, "1", send(t, "HOLD_SECOND"))
+	require.Len(t, keys(), 2, "two active requests share one Header map")
+
+	require.Equal(t, "1", send(t, "RELEASE_FIRST"))
+	var owner BpfHeaderRequestT
+	require.ErrorIs(t, associations.Lookup(first[0], &owner), ebpf.ErrKeyNotExist)
+	require.Len(t, keys(), 1)
+
+	require.Equal(t, "1", send(t, "RELEASE_SECOND"))
+	require.Empty(t, keys())
+}
+
 func TestHTTP2ClientTraceparentBeforeImmediateFlush(t *testing.T) {
 	require.Equal(t, 0, os.Geteuid(), "privileged eBPF test must run as root")
 	require.NoError(t, rlimit.RemoveMemlock())
@@ -92,7 +133,7 @@ func TestHTTP2ClientTraceparentBeforeImmediateFlush(t *testing.T) {
 	t.Run("enabled", func(t *testing.T) {
 		for _, mode := range modes {
 			t.Run(strings.ToLower(mode), func(t *testing.T) {
-				send := startHTTPClientTargetWithMode(t, targetBin, config.ContextPropagationHeaders, "TP_RESULT=")
+				send, _ := startHTTPClientTargetWithMode(t, targetBin, config.ContextPropagationHeaders, "TP_RESULT=")
 				require.EventuallyWithT(t, func(c *assert.CollectT) {
 					assert.Regexp(c,
 						`^1:00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$`,
@@ -106,7 +147,7 @@ func TestHTTP2ClientTraceparentBeforeImmediateFlush(t *testing.T) {
 	t.Run("disabled", func(t *testing.T) {
 		for _, mode := range modes {
 			t.Run(strings.ToLower(mode), func(t *testing.T) {
-				send := startHTTPClientTargetWithMode(t, targetBin, config.ContextPropagationDisabled, "TP_RESULT=")
+				send, _ := startHTTPClientTargetWithMode(t, targetBin, config.ContextPropagationDisabled, "TP_RESULT=")
 				assert.Equal(t, "0:", send(t, mode),
 					"disabled header propagation must not inject a traceparent")
 			})
@@ -142,7 +183,8 @@ func buildHTTP2ClientTarget(t *testing.T) string {
 // and returns the number of Traceparent headers the receiver reported. The
 // target loops over stdin, so send can be called repeatedly (e.g. for polling).
 func startHTTPClientTarget(t *testing.T, bin string) func(t *testing.T, mode string) string {
-	return startHTTPClientTargetWithMode(t, bin, config.ContextPropagationAll, "TP_COUNT=")
+	send, _ := startHTTPClientTargetWithMode(t, bin, config.ContextPropagationAll, "TP_COUNT=")
+	return send
 }
 
 func startHTTPClientTargetWithMode(
@@ -150,7 +192,7 @@ func startHTTPClientTargetWithMode(
 	bin string,
 	mode config.ContextPropagationMode,
 	resultPrefix string,
-) func(t *testing.T, mode string) string {
+) (func(t *testing.T, mode string) string, *ebpf.Map) {
 	t.Helper()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -177,7 +219,7 @@ func startHTTPClientTargetWithMode(
 	_ = collectClientLines(t, "target stderr", stderr)
 	waitForClientLine(t, stdoutLines, "READY", 30*time.Second)
 
-	stopTracer := attachGoTracer(t, app.PID(cmd.Process.Pid), mode)
+	stopTracer, associations := attachGoTracer(t, app.PID(cmd.Process.Pid), mode)
 	t.Cleanup(func() {
 		stopTarget()
 		stopTracer()
@@ -189,7 +231,7 @@ func startHTTPClientTargetWithMode(
 		require.NoError(t, err)
 		line := waitForClientLine(t, stdoutLines, resultPrefix, 30*time.Second)
 		return strings.TrimPrefix(strings.TrimSpace(line), resultPrefix)
-	}
+	}, associations
 }
 
 func TestGRPCClientTraceparentRespectsPropagationMode(t *testing.T) {
@@ -442,7 +484,7 @@ func startGRPCClientTarget(
 	_ = collectClientLines(t, "target stderr", stderr)
 	waitForClientLine(t, stdoutLines, "READY", 30*time.Second)
 
-	stopTracer := attachGoTracer(t, app.PID(cmd.Process.Pid), mode)
+	stopTracer, _ := attachGoTracer(t, app.PID(cmd.Process.Pid), mode)
 	t.Cleanup(func() {
 		_, _ = io.WriteString(stdin, "EXIT\n")
 		cancel()
@@ -461,7 +503,7 @@ func startGRPCClientTarget(
 
 // attachGoTracer wires up the real ProcessTracer with the gotracer against the
 // given PID, mirroring the production discovery/attach path.
-func attachGoTracer(t *testing.T, pid app.PID, mode config.ContextPropagationMode) func() {
+func attachGoTracer(t *testing.T, pid app.PID, mode config.ContextPropagationMode) (func(), *ebpf.Map) {
 	t.Helper()
 
 	cfg := obi.DefaultConfig
@@ -506,7 +548,7 @@ func attachGoTracer(t *testing.T, pid app.PID, mode config.ContextPropagationMod
 			t.Error("timed out waiting for gotracer ProcessTracer to stop")
 		}
 		spans.Close()
-	}
+	}, goTracer.bpfObjects.HeaderReqMap
 }
 
 // goFunctionNames returns the union of Go symbols the gotracer probes, matching
