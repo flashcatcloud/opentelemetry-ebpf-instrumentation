@@ -40,10 +40,11 @@ enabled. The workflow stops for conflicts or upstream changes under
 `.github/workflows/` or `.github/actions/`. Review those changes in a manual PR.
 
 For publishing, create the Actions environment `obi-upstream-sync` and limit
-its deployment branches to `main`. Install a Flashcat GitHub App on the OBI
-fork with **Contents** and **Pull requests** write access. Set the
-`OBI_SYNC_APP_CLIENT_ID` environment variable and the
-`OBI_SYNC_APP_PRIVATE_KEY` environment secret.
+its deployment branches to `main`. Create a fine-grained personal access token
+with `flashcatcloud` as the resource owner and select only the OBI fork. Grant
+**Contents** and **Pull requests** write access, then store the token in the
+`OBI_SYNC_PAT` environment secret. Sync PRs are opened under the token owner's
+account.
 
 Run this regression against the full candidate SHA in the workflow summary
 before merging the PR with a merge commit.
