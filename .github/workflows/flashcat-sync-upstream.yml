@@ -1,6 +1,8 @@
 name: Flashcat OBI upstream sync
 
 on:
+  schedule:
+    - cron: '17 1 * * *' # 09:17 Asia/Shanghai
   workflow_dispatch:
     inputs:
       publish:
@@ -21,6 +23,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: obi-upstream-sync
+    env:
+      PUBLISH: ${{ github.event_name == 'schedule' || inputs.publish == true }}
     steps:
       - name: Check out fork main
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -32,8 +36,6 @@ jobs:
       - name: Plan upstream merge
         id: plan
         shell: bash
-        env:
-          PUBLISH: ${{ inputs.publish }}
         run: |
           base_sha=$(git rev-parse HEAD)
           git fetch --no-tags --no-recurse-submodules \
@@ -74,7 +76,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Get sync bot token
-        if: inputs.publish && steps.plan.outputs.branch != ''
+        if: env.PUBLISH == 'true' && steps.plan.outputs.branch != ''
         id: app-token
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
@@ -84,7 +86,7 @@ jobs:
           permission-pull-requests: write
 
       - name: Publish or reuse sync PR
-        if: inputs.publish && steps.plan.outputs.branch != ''
+        if: env.PUBLISH == 'true' && steps.plan.outputs.branch != ''
         shell: bash
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -113,7 +115,7 @@ jobs:
           else
             candidate=$(git -c user.name='Flashcat OBI Sync' -c user.email='obi-sync@users.noreply.github.com' \
               commit-tree "$MERGE_TREE" -p "$BASE_SHA" -p "$UPSTREAM_SHA" \
-              -m "Merge OBI upstream ${UPSTREAM_SHA:0:12}")
+              -m "chore: sync OBI upstream through ${UPSTREAM_SHA:0:12}")
             git push --force-with-lease="$ref:" origin "$candidate:$ref"
           fi
 
@@ -126,6 +128,6 @@ jobs:
               printf 'Use a merge commit to preserve upstream history.\n'
             } > "$body"
             pr=$(gh pr create --repo "$GH_REPO" --base main --head "$BRANCH" \
-              --title "Sync OBI upstream through ${UPSTREAM_SHA:0:12}" --body-file "$body")
+              --title "chore: sync OBI upstream through ${UPSTREAM_SHA:0:12}" --body-file "$body")
           fi
           printf 'Sync PR %s\n\nCandidate `%s`\n' "$pr" "$candidate" >> "$GITHUB_STEP_SUMMARY"

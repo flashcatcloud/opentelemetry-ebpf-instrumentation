@@ -27,9 +27,13 @@ A separate Go run checks concurrent Header injection and preservation. The
 sockhash probe is expected to report false EOF on this test kernel and OBI is
 expected to disable socket-level injection.
 
-## Manual upstream sync
+## Upstream sync
 
-In the Flashcat fork, open **Actions → Flashcat OBI upstream sync → Run
+The Flashcat fork checks upstream every day at 09:17 Asia/Shanghai (01:17 UTC).
+When upstream has new commits and merges cleanly, the scheduled run opens or
+reuses a sync PR. A maintainer reviews and merges the PR.
+
+To run the check on demand, open **Actions → Flashcat OBI upstream sync → Run
 workflow** and select `main`. The default run checks for a clean merge and
 reports the upstream SHA in its summary. To open a PR, rerun with `publish`
 enabled. The workflow stops for conflicts or upstream changes under
