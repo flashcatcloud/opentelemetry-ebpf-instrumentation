@@ -1,0 +1,131 @@
+name: Flashcat OBI upstream sync
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Push the candidate branch and open a PR
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flashcat-obi-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'flashcatcloud/opentelemetry-ebpf-instrumentation' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: obi-upstream-sync
+    steps:
+      - name: Check out fork main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/heads/main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Plan upstream merge
+        id: plan
+        shell: bash
+        env:
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          base_sha=$(git rev-parse HEAD)
+          git fetch --no-tags --no-recurse-submodules \
+            https://github.com/open-telemetry/opentelemetry-ebpf-instrumentation.git refs/heads/main
+          upstream_sha=$(git rev-parse FETCH_HEAD)
+
+          printf 'Fork main `%s`\n\nUpstream main `%s`\n\n' "$base_sha" "$upstream_sha" >> "$GITHUB_STEP_SUMMARY"
+          if git merge-base --is-ancestor "$upstream_sha" "$base_sha"; then
+            echo "Fork main already contains the upstream commit." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if ! merge_tree=$(git merge-tree --write-tree --name-only "$base_sha" "$upstream_sha"); then
+            printf '%s\n' "$merge_tree"
+            echo "Git could not merge upstream main. See this step's log for details." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          workflow_commit=$(git rev-list -1 --full-history "$base_sha..$upstream_sha" -- .github/workflows .github/actions)
+          if [[ -n $workflow_commit ]] || ! git diff --quiet "$base_sha" "$merge_tree" -- .github/workflows .github/actions; then
+            echo "Upstream changes Actions definitions. Review these changes and open the sync PR manually." >> "$GITHUB_STEP_SUMMARY"
+            git log --oneline --full-history "$base_sha..$upstream_sha" -- .github/workflows .github/actions
+            git diff --name-only "$base_sha" "$merge_tree" -- .github/workflows .github/actions
+            if [[ $PUBLISH == true ]]; then
+              exit 1
+            fi
+            exit 0
+          fi
+
+          branch="sync/upstream-${upstream_sha:0:12}-${base_sha:0:12}"
+          printf 'Clean merge tree `%s`\n\nCandidate branch `%s`\n\n' "$merge_tree" "$branch" >> "$GITHUB_STEP_SUMMARY"
+          git diff --stat "$base_sha" "$merge_tree"
+          {
+            printf 'base_sha=%s\n' "$base_sha"
+            printf 'upstream_sha=%s\n' "$upstream_sha"
+            printf 'tree=%s\n' "$merge_tree"
+            printf 'branch=%s\n' "$branch"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Get sync bot token
+        if: inputs.publish && steps.plan.outputs.branch != ''
+        id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.OBI_SYNC_APP_CLIENT_ID }}
+          private-key: ${{ secrets.OBI_SYNC_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Publish or reuse sync PR
+        if: inputs.publish && steps.plan.outputs.branch != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+          BASE_SHA: ${{ steps.plan.outputs.base_sha }}
+          UPSTREAM_SHA: ${{ steps.plan.outputs.upstream_sha }}
+          MERGE_TREE: ${{ steps.plan.outputs.tree }}
+          BRANCH: ${{ steps.plan.outputs.branch }}
+        run: |
+          gh auth setup-git --hostname github.com
+          current_base=$(git ls-remote origin refs/heads/main | cut -f1)
+          if [[ $current_base != "$BASE_SHA" ]]; then
+            echo "Fork main moved during the run. Run the workflow again." >&2
+            exit 1
+          fi
+
+          ref="refs/heads/$BRANCH"
+          existing=$(git ls-remote origin "$ref")
+          if [[ -n $existing ]]; then
+            git fetch --no-tags --no-recurse-submodules origin "$ref"
+            candidate=$(git rev-parse FETCH_HEAD)
+            if [[ $(git show -s --format='%T %P' "$candidate") != "$MERGE_TREE $BASE_SHA $UPSTREAM_SHA" ]]; then
+              echo "The existing branch $BRANCH has unexpected history or contents." >&2
+              exit 1
+            fi
+          else
+            candidate=$(git -c user.name='Flashcat OBI Sync' -c user.email='obi-sync@users.noreply.github.com' \
+              commit-tree "$MERGE_TREE" -p "$BASE_SHA" -p "$UPSTREAM_SHA" \
+              -m "Merge OBI upstream ${UPSTREAM_SHA:0:12}")
+            git push --force-with-lease="$ref:" origin "$candidate:$ref"
+          fi
+
+          pr=$(gh pr list --repo "$GH_REPO" --base main --head "$BRANCH" --state open --json url --jq '.[0].url // empty')
+          if [[ -z $pr ]]; then
+            body="$RUNNER_TEMP/obi-sync-pr.md"
+            {
+              printf 'Merge upstream OBI through `%s` into Flashcat `main`.\n\n' "$UPSTREAM_SHA"
+              printf 'Run the [Kylin 4.19 regression](https://github.com/%s/blob/main/scripts/kylin419/README.md) against candidate `%s` before merging.\n\n' "$GH_REPO" "$candidate"
+              printf 'Use a merge commit to preserve upstream history.\n'
+            } > "$body"
+            pr=$(gh pr create --repo "$GH_REPO" --base main --head "$BRANCH" \
+              --title "Sync OBI upstream through ${UPSTREAM_SHA:0:12}" --body-file "$body")
+          fi
+          printf 'Sync PR %s\n\nCandidate `%s`\n' "$pr" "$candidate" >> "$GITHUB_STEP_SUMMARY"

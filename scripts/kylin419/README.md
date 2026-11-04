@@ -26,3 +26,20 @@ checks split HTTP/1 requests, HTTP/2 remote parents, gRPC, DNS and TCP metrics.
 A separate Go run checks concurrent Header injection and preservation. The
 sockhash probe is expected to report false EOF on this test kernel and OBI is
 expected to disable socket-level injection.
+
+## Manual upstream sync
+
+In the Flashcat fork, open **Actions → Flashcat OBI upstream sync → Run
+workflow** and select `main`. The default run checks for a clean merge and
+reports the upstream SHA in its summary. To open a PR, rerun with `publish`
+enabled. The workflow stops for conflicts or upstream changes under
+`.github/workflows/` or `.github/actions/`. Review those changes in a manual PR.
+
+For publishing, create the Actions environment `obi-upstream-sync` and limit
+its deployment branches to `main`. Install a Flashcat GitHub App on the OBI
+fork with **Contents** and **Pull requests** write access. Set the
+`OBI_SYNC_APP_CLIENT_ID` environment variable and the
+`OBI_SYNC_APP_PRIVATE_KEY` environment secret.
+
+Run this regression against the full candidate SHA in the workflow summary
+before merging the PR with a merge commit.
