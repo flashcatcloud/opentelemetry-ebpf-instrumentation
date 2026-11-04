@@ -75,27 +75,22 @@ jobs:
             printf 'branch=%s\n' "$branch"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Get sync bot token
-        if: env.PUBLISH == 'true' && steps.plan.outputs.branch != ''
-        id: app-token
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          client-id: ${{ vars.OBI_SYNC_APP_CLIENT_ID }}
-          private-key: ${{ secrets.OBI_SYNC_APP_PRIVATE_KEY }}
-          permission-contents: write
-          permission-pull-requests: write
-
       - name: Publish or reuse sync PR
         if: env.PUBLISH == 'true' && steps.plan.outputs.branch != ''
         shell: bash
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ secrets.OBI_SYNC_PAT }}
           GH_REPO: ${{ github.repository }}
           BASE_SHA: ${{ steps.plan.outputs.base_sha }}
           UPSTREAM_SHA: ${{ steps.plan.outputs.upstream_sha }}
           MERGE_TREE: ${{ steps.plan.outputs.tree }}
           BRANCH: ${{ steps.plan.outputs.branch }}
         run: |
+          if [[ -z $GH_TOKEN ]]; then
+            echo "Set OBI_SYNC_PAT in the obi-upstream-sync environment to publish a sync PR." >&2
+            exit 1
+          fi
+
           gh auth setup-git --hostname github.com
           current_base=$(git ls-remote origin refs/heads/main | cut -f1)
           if [[ $current_base != "$BASE_SHA" ]]; then
