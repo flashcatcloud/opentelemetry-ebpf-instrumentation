@@ -20,11 +20,7 @@ import (
 	"go.opentelemetry.io/obi/internal/test/tools"
 )
 
-const (
-	testTimeout = 3 * time.Minute
-
-	jaegerQueryURL = "http://localhost:36686/api/traces"
-)
+const testTimeout = 3 * time.Minute
 
 var cluster *kube.Kind
 

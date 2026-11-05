@@ -29,11 +29,11 @@ func TestDaemonSetMetadata(t *testing.T) {
 				require.EventuallyWithT(t, func(ct *assert.CollectT) {
 					// Invoking both service instances, but we will expect that only one
 					// is instrumented, according to the discovery mechanisms
-					resp, err := http.Get("http://localhost:38081/pingpong")
+					resp, err := http.Get("http://" + cluster.HostPort(8081) + "/pingpong")
 					require.NoError(ct, err)
 					require.Equal(ct, http.StatusOK, resp.StatusCode)
 
-					resp, err = http.Get(jaegerQueryURL + "?service=dsservice")
+					resp, err = http.Get("http://" + cluster.HostPort(16686) + "/api/traces?service=dsservice")
 					require.NoError(ct, err)
 					if resp == nil {
 						return

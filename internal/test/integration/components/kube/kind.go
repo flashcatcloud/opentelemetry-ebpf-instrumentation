@@ -60,6 +60,9 @@ type Kind struct {
 	logsDir                string
 	promEndpoint           string
 	jaegerEndpoint         string
+	promEndpointSet        bool
+	jaegerEndpointSet      bool
+	hostPorts              map[int]string
 
 	weaverValidation bool
 	// weaverRequireSpans additionally fails the suite if the weaver report
@@ -114,18 +117,20 @@ func ExportLogs(folder string) Option {
 }
 
 // ExportPrometheus overrides the prometheus host:port, where all the stored metrics will be collected from
-// before the Kind cluster is shut down. Default: localhost:39090
+// before the Kind cluster is shut down. Defaults to the mapped container port 9090.
 func ExportPrometheus(hostPort string) Option {
 	return func(k *Kind) {
 		k.promEndpoint = hostPort
+		k.promEndpointSet = true
 	}
 }
 
 // ExportJaeger overrides a jaeger host:port, where all the stored traces will be collected from
-// before the Kind cluster is shut down. Default: localhost:36686
+// before the Kind cluster is shut down. Defaults to the mapped container port 16686.
 func ExportJaeger(hostPort string) Option {
 	return func(k *Kind) {
 		k.jaegerEndpoint = hostPort
+		k.jaegerEndpointSet = true
 	}
 }
 
@@ -175,12 +180,10 @@ func WeaverRequireSpans() WeaverOption {
 // NewKind creates a kind cluster given a name and set of Option instances.
 func NewKind(kindClusterName string, options ...Option) *Kind {
 	k := &Kind{
-		testEnv:        env.New(),
-		clusterName:    kindClusterName,
-		timeout:        2 * time.Minute,
-		promEndpoint:   "localhost:39090",
-		jaegerEndpoint: "localhost:36686",
-		logsDir:        testpath.KindLogs,
+		testEnv:     env.New(),
+		clusterName: kindClusterName,
+		timeout:     2 * time.Minute,
+		logsDir:     testpath.KindLogs,
 	}
 	for _, option := range options {
 		option(k)
@@ -195,16 +198,25 @@ func NewKind(kindClusterName string, options ...Option) *Kind {
 func (k *Kind) Run(m *testing.M) {
 	log := log()
 	var funcs []env.Func
+	provider := kind.NewProvider()
+	var create env.Func
 	if k.kindConfigPath != "" {
 		log.Info("adding func: createKindCluster", "name", k.clusterName, "image", kindImage, "path", k.kindConfigPath)
-		funcs = append(funcs,
-			// TODO: allow overriding kindImage
-			envfuncs.CreateClusterWithConfig(kind.NewProvider(), k.clusterName, k.kindConfigPath, kind.WithImage(kindImage)))
+		create = envfuncs.CreateClusterWithConfig(provider, k.clusterName, k.kindConfigPath, kind.WithImage(kindImage))
 	} else {
 		log.Info("adding func: createKindCluster", "name", k.clusterName)
-		funcs = append(funcs,
-			envfuncs.CreateCluster(kind.NewProvider(), k.clusterName))
+		create = envfuncs.CreateCluster(provider, k.clusterName)
 	}
+	clusterReady := false
+	funcs = append(funcs, func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
+		ctx, err := create(ctx, cfg)
+		if err != nil {
+			return ctx, err
+		}
+		ctx, err = k.discoverHostPorts()(ctx, cfg)
+		clusterReady = err == nil
+		return ctx, err
+	})
 	for _, img := range k.localImages {
 		log.Info("adding func: loadLocalImage", "img", img)
 		funcs = append(funcs, k.loadLocalImage(img))
@@ -225,22 +237,45 @@ func (k *Kind) Run(m *testing.M) {
 		funcs = append(funcs, deploy(mf))
 	}
 
+	setupComplete := false
+	funcs = append(funcs, func(ctx context.Context, _ *envconf.Config) (context.Context, error) {
+		setupComplete = true
+		return ctx, nil
+	})
 	var finishes []env.Func
 	if k.weaverValidation {
 		log.Info("adding finish func: validateWeaver")
-		finishes = append(finishes, k.validateWeaverFinish())
+		finishes = append(finishes, func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
+			if !setupComplete {
+				return ctx, nil
+			}
+			return k.validateWeaverFinish()(ctx, cfg)
+		})
 	}
 	finishes = append(finishes,
 		k.exportLogs(),
 		k.exportAllMetrics(),
 		k.exportAllTraces(),
 		k.deleteLabeled(),
-		envfuncs.DestroyCluster(k.clusterName),
 	)
 
 	log.Info("starting kind setup")
 	code := k.testEnv.Setup(funcs...).
-		Finish(finishes...).Run(m)
+		Finish(func(ctx context.Context, cfg *envconf.Config) (context.Context, error) {
+			if clusterReady {
+				for _, finish := range finishes {
+					var err error
+					ctx, err = finish(ctx, cfg)
+					if err != nil {
+						log.Error("cluster teardown step failed", "error", err)
+					}
+				}
+			} else {
+				ctx, _ = k.exportLogs()(ctx, cfg)
+			}
+			// A failed create may leave nodes without a provider in the context.
+			return ctx, provider.SetDefaults().WithName(k.clusterName).Destroy(ctx)
+		}).Run(m)
 	log.With("returnCode", code).Info("tests finished run")
 	if k.weaverFailed && code == 0 {
 		log.Error("weaver semconv validation failed — failing the suite")
@@ -292,7 +327,7 @@ func (k *Kind) exportAllMetrics() env.Func {
 
 func (k *Kind) exportAllTraces() env.Func {
 	return func(ctx context.Context, _ *envconf.Config) (context.Context, error) {
-		if k.promEndpoint == "" {
+		if k.jaegerEndpoint == "" {
 			return ctx, nil
 		}
 		_ = os.MkdirAll(path.Join(k.logsDir, k.clusterName), 0o755)

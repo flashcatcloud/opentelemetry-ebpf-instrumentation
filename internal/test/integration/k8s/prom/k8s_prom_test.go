@@ -12,7 +12,7 @@ import (
 // Run it alphabetically first (AA-prefix), with a longer timeout, to wait until all the components are up and
 // traces/metrics are flowing normally
 func TestPrometheus_MetricsDecoration_AA_WaitForComponents(t *testing.T) {
-	k8s.DoWaitForComponentsAvailable(t)
+	k8s.DoWaitForComponentsAvailable(t, cluster)
 }
 
 func TestPrometheus_MetricsDecoration_HTTP(t *testing.T) {

@@ -23,8 +23,7 @@ import (
 // This file contains some functions and features that are accessed/used
 // from diverse integration tests
 const (
-	testTimeout        = 3 * time.Minute
-	prometheusHostPort = "localhost:39090"
+	testTimeout = 3 * time.Minute
 
 	HostIDRegex = `^[0-9A-Fa-f\-]+$`
 	UUIDRegex   = `^[0-9A-Fa-f]{8}-([0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}$`
@@ -72,12 +71,10 @@ var (
 	}
 )
 
-func DoWaitForComponentsAvailable(t *testing.T) {
-	const (
-		subpath = "/smoke"
-		url     = "http://localhost:38080"
-	)
-	pq := promtest.Client{HostPort: prometheusHostPort}
+func DoWaitForComponentsAvailable(t *testing.T, cluster *kube.Kind) {
+	const subpath = "/smoke"
+	url := "http://" + cluster.HostPort(8080)
+	pq := promtest.Client{HostPort: cluster.HostPort(9090)}
 	var results []promtest.Result
 	require.EventuallyWithT(t, func(ct *assert.CollectT) {
 		// first, verify that the test service endpoint is healthy
@@ -336,7 +333,7 @@ func testMetricsDecoration(
 ) features.Func {
 	return func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
 		// Testing the decoration of the server-side HTTP calls from the internal-pinger pod
-		pq := promtest.Client{HostPort: prometheusHostPort}
+		pq := promtest.Client{HostPort: kube.HostPort(ctx, 9090)}
 		for _, metric := range metricsSet {
 			t.Run(metric, func(t *testing.T) {
 				var results []promtest.Result

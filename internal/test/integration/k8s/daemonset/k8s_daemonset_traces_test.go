@@ -32,15 +32,15 @@ func TestBasicTracing(t *testing.T) {
 				require.EventuallyWithT(t, func(ct *assert.CollectT) {
 					// Invoking both service instances, but we will expect that only one
 					// is instrumented, according to the discovery mechanisms
-					resp, err := http.Get("http://localhost:38080/pingpong")
+					resp, err := http.Get("http://" + cluster.HostPort(8080) + "/pingpong")
 					require.NoError(ct, err)
 					require.Equal(ct, http.StatusOK, resp.StatusCode)
 
-					resp, err = http.Get("http://localhost:38081/pingpong")
+					resp, err = http.Get("http://" + cluster.HostPort(8081) + "/pingpong")
 					require.NoError(ct, err)
 					require.Equal(ct, http.StatusOK, resp.StatusCode)
 
-					resp, err = http.Get(jaegerQueryURL + "?service=otherinstance")
+					resp, err = http.Get("http://" + cluster.HostPort(16686) + "/api/traces?service=otherinstance")
 					require.NoError(ct, err)
 					if resp == nil {
 						return
@@ -89,7 +89,7 @@ func TestBasicTracing(t *testing.T) {
 				}, testTimeout, 100*time.Millisecond)
 
 				// Check that the "testserver" service is never instrumented
-				resp, err := http.Get(jaegerQueryURL + "?service=testserver")
+				resp, err := http.Get("http://" + cluster.HostPort(16686) + "/api/traces?service=testserver")
 				require.NoError(t, err)
 				require.Equal(t, http.StatusOK, resp.StatusCode)
 				var tq jaeger.TracesQuery
@@ -108,15 +108,15 @@ func TestBasicTracing(t *testing.T) {
 				require.EventuallyWithT(t, func(ct *assert.CollectT) {
 					// Invoking both service instances, but we will expect that only one
 					// is instrumented, according to the discovery mechanisms
-					resp, err := http.Get("http://localhost:38080/pingpongtoo")
+					resp, err := http.Get("http://" + cluster.HostPort(8080) + "/pingpongtoo")
 					require.NoError(ct, err)
 					require.Equal(ct, http.StatusOK, resp.StatusCode)
 
-					resp, err = http.Get("http://localhost:38081/pingpongtoo")
+					resp, err = http.Get("http://" + cluster.HostPort(8081) + "/pingpongtoo")
 					require.NoError(ct, err)
 					require.Equal(ct, http.StatusOK, resp.StatusCode)
 
-					resp, err = http.Get(jaegerQueryURL + "?service=otherinstance")
+					resp, err = http.Get("http://" + cluster.HostPort(16686) + "/api/traces?service=otherinstance")
 					require.NoError(ct, err)
 					if resp == nil {
 						return

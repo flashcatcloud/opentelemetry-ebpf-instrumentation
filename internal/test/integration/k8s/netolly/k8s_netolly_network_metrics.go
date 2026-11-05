@@ -19,10 +19,7 @@ import (
 	k8s "go.opentelemetry.io/obi/internal/test/integration/k8s/common"
 )
 
-const (
-	testTimeout        = 5 * time.Minute
-	prometheusHostPort = "localhost:39090"
-)
+const testTimeout = 5 * time.Minute
 
 // values according to official Kind documentation: https://kind.sigs.k8s.io/docs/user/configuration/#pod-subnet
 var (
@@ -64,7 +61,7 @@ func FeatureNetworkFlowOTLPResource() features.Feature {
 }
 
 func testNetFlowOTLPResource(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
-	pq := promtest.Client{HostPort: prometheusHostPort}
+	pq := promtest.Client{HostPort: kube.HostPort(ctx, 9090)}
 	require.EventuallyWithT(t, func(ct *assert.CollectT) {
 		results, err := pq.Query(`obi_network_flow_bytes_total{src_name="internal-pinger-resource"}`)
 		require.NoError(ct, err)
@@ -95,7 +92,7 @@ func FeatureNetworkFlowPackets() features.Feature {
 }
 
 func testNetFlowBytesForExistingConnections(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
-	pq := promtest.Client{HostPort: prometheusHostPort}
+	pq := promtest.Client{HostPort: kube.HostPort(ctx, 9090)}
 	// testing request flows (to testserver as Service)
 	require.EventuallyWithT(t, func(ct *assert.CollectT) {
 		results, err := pq.Query(`obi_network_flow_bytes_total{src_name="internal-pinger-net",dst_name="testserver"}`)
@@ -243,7 +240,7 @@ func testNetFlowBytesForExistingConnections(ctx context.Context, t *testing.T, _
 }
 
 func testNetFlowBytesForExternalTraffic(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
-	pq := promtest.Client{HostPort: prometheusHostPort}
+	pq := promtest.Client{HostPort: kube.HostPort(ctx, 9090)}
 
 	// test external traffic (this test --> prometheus)
 	require.EventuallyWithT(t, func(ct *assert.CollectT) {
@@ -264,7 +261,7 @@ func testNetFlowBytesForExternalTraffic(ctx context.Context, t *testing.T, _ *en
 }
 
 func testNetFlowPacketsForExistingConnections(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
-	pq := promtest.Client{HostPort: prometheusHostPort}
+	pq := promtest.Client{HostPort: kube.HostPort(ctx, 9090)}
 	// testing request flows (to testserver as Service)
 	require.EventuallyWithT(t, func(ct *assert.CollectT) {
 		results, err := pq.Query(`obi_network_flow_packets_total{src_name="internal-pinger-packets",dst_name="testserver"}`)

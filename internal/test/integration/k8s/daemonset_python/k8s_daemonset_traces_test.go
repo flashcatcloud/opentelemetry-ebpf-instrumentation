@@ -31,11 +31,11 @@ func TestPythonBasicTracing(t *testing.T) {
 				var trace jaeger.Trace
 				var podID string
 				require.EventuallyWithT(t, func(ct *assert.CollectT) {
-					resp, err := http.Get("http://localhost:7773/greeting")
+					resp, err := http.Get("http://" + cluster.HostPort(7773) + "/greeting")
 					require.NoError(ct, err)
 					require.Equal(ct, http.StatusOK, resp.StatusCode)
 
-					resp, err = http.Get(jaegerQueryURL + "?service=mypythonapp&operation=GET%20%2Fgreeting")
+					resp, err = http.Get("http://" + cluster.HostPort(16686) + "/api/traces?service=mypythonapp&operation=GET%20%2Fgreeting")
 					require.NoError(ct, err)
 					if resp == nil {
 						return
@@ -89,11 +89,11 @@ func TestPythonBasicTracing(t *testing.T) {
 
 				// We now use /smoke instead of /greeting to ensure we see those APIs after a restart
 				require.EventuallyWithT(t, func(ct *assert.CollectT) {
-					resp, err := http.Get("http://localhost:7773/smoke")
+					resp, err := http.Get("http://" + cluster.HostPort(7773) + "/smoke")
 					require.NoError(ct, err)
 					require.Equal(ct, http.StatusOK, resp.StatusCode)
 
-					resp, err = http.Get(jaegerQueryURL + "?service=mypythonapp&operation=GET%20%2Fsmoke")
+					resp, err = http.Get("http://" + cluster.HostPort(16686) + "/api/traces?service=mypythonapp&operation=GET%20%2Fsmoke")
 					require.NoError(ct, err)
 					if resp == nil {
 						return

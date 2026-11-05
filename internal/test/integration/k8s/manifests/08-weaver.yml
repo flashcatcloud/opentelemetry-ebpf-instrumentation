@@ -5,7 +5,7 @@
 # the emitted telemetry against the OBI schema registry under `schemas/obi/`,
 # mounted read-only at /obi-registry via the kind `obi-registry` extraMount
 # (see 00-kind*.yml). The Go harness stops it and reads its live-check report
-# through the admin API (4320), which the kind config exposes on host port 32320.
+# through the admin API (4320), which the kind config exposes on a dynamically allocated loopback port.
 #
 # This is the in-cluster counterpart of components/weaver/service.yml.
 apiVersion: v1
@@ -96,7 +96,7 @@ spec:
           name: otlp-grpc
         - containerPort: 4320
           name: admin
-          # exposed on the host via the kind extraPortMapping (host 32320)
+          # exposed on the host via a dynamic kind extraPortMapping
           hostPort: 4320
 ---
 # Intermediate collector decoupling the suite otelcol from weaver's slow
@@ -139,7 +139,7 @@ spec:
           name: otlp-grpc
         # weavercol's own telemetry, scraped from the host at teardown to
         # detect exports dropped before weaver (exposed via the kind
-        # extraPortMapping 8888 -> WeaverColMetricsHostPort in 00-kind*.yml)
+        # extraPortMapping 8888 -> a dynamic loopback port in 00-kind*.yml)
         - containerPort: 8888
           name: metrics
           hostPort: 8888

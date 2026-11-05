@@ -38,7 +38,7 @@ func TestTracesDecoration(t *testing.T) {
 				var trace jaeger.Trace
 				var parent jaeger.Span
 				require.EventuallyWithT(t, func(ct *assert.CollectT) {
-					resp, err := http.Get(jaegerQueryURL + "?service=testserver&operation=GET%20%2Ftraced-ping")
+					resp, err := http.Get("http://" + cluster.HostPort(16686) + "/api/traces?service=testserver&operation=GET%20%2Ftraced-ping")
 					require.NoError(ct, err)
 					if resp == nil {
 						return

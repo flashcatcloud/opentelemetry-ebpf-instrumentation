@@ -22,10 +22,6 @@ import (
 	"go.opentelemetry.io/obi/internal/test/tools"
 )
 
-const (
-	prometheusHostPort = "localhost:39090"
-)
-
 var cluster *kube.Kind
 
 func TestMain(m *testing.M) {
@@ -64,7 +60,7 @@ func TestMain(m *testing.M) {
 // Run it alphabetically first (AA-prefix), with a longer timeout, to wait until all the components are up and
 // traces/metrics are flowing normally
 func TestInformersCache_MetricsDecoration_AA_WaitForComponents(t *testing.T) {
-	k8s.DoWaitForComponentsAvailable(t)
+	k8s.DoWaitForComponentsAvailable(t, cluster)
 }
 
 func TestInformersCache_MetricsDecoration_HTTP(t *testing.T) {
@@ -90,7 +86,7 @@ func TestInformersCache_InternalMetrics(t *testing.T) {
 }
 
 func metricVal(t *testing.T, promQLQuery string) int {
-	pq := promtest.Client{HostPort: prometheusHostPort}
+	pq := promtest.Client{HostPort: cluster.HostPort(9090)}
 
 	results, err := pq.Query(promQLQuery)
 	require.NoError(t, err)

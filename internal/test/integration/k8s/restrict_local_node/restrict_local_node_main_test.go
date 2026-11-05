@@ -22,10 +22,7 @@ import (
 	"go.opentelemetry.io/obi/internal/test/tools"
 )
 
-const (
-	prometheusHostPort = "localhost:39090"
-	testTimeout        = 3 * time.Minute
-)
+const testTimeout = 3 * time.Minute
 
 var cluster *kube.Kind
 
@@ -63,7 +60,7 @@ func TestMain(m *testing.M) {
 
 func TestNoSourceAndDestAvailable(t *testing.T) {
 	// Wait for some metrics available at Prometheus
-	pq := promtest.Client{HostPort: prometheusHostPort}
+	pq := promtest.Client{HostPort: cluster.HostPort(9090)}
 	for _, args := range []string{
 		`k8s_dst_name="httppinger"`,
 		`k8s_src_name="httppinger"`,
