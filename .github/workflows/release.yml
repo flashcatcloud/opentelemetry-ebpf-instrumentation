@@ -502,7 +502,7 @@ jobs:
           TAG_NAME: ${{ inputs.tag || github.ref_name }}
         run: |
           gh release create "${TAG_NAME}" \
-            --repo "open-telemetry/opentelemetry-ebpf-instrumentation" \
+            --repo "$GITHUB_REPOSITORY" \
             --generate-notes \
             --draft \
             dist/obi-*-linux-*.tar.gz \
