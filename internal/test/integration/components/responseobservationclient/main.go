@@ -8,10 +8,9 @@
 //
 // ROLE=relay is a transparent TCP relay in front of the peer. It forwards both
 // directions byte for byte and changes only how the response is segmented on the
-// wire: the first byte goes out in its own TCP segment and the rest follows
-// RESEGMENT_DELAY_MS later. OBI's tcp_cleanup_rbuf probe returns early on any read
-// of one byte or fewer, and the remainder does not begin with a status line, so no
-// probe parses the 200. The bytes the caller receives are the same either way.
+// wire: the first two bytes go out in their own TCP segment and the rest follows
+// RESEGMENT_DELAY_MS later. Neither read starts with a complete status line, so
+// the HTTP probe does not parse the 200. The caller receives the original bytes.
 //
 // ROLE=resetter accepts a connection, reads the request, and resets it without
 // answering. Nothing comes back, which is the case the byte counter tells apart from
@@ -51,9 +50,8 @@ import (
 	"time"
 )
 
-// resegmentAt is the size of the first segment, in bytes. One byte is what puts the
-// read under OBI's copied_len <= 1 early return in return_recvmsg.
-const resegmentAt = 1
+// Split inside the status line, beyond the single-byte prefix that OBI reassembles.
+const resegmentAt = 2
 
 // noKeepAlive closes a call's socket as soon as the response has been read.
 func noKeepAlive() *http.Client {
@@ -261,7 +259,7 @@ func runResetter(port string) {
 
 func runPeer(port string) {
 	http.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
-		// Long enough that the first byte is not the whole response.
+		// Long enough to split the response across reads.
 		fmt.Fprintln(w, "answered by the peer, which is the authority on this call")
 	})
 	log.Fatal(http.ListenAndServe(":"+port, nil))
