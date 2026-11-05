@@ -4,6 +4,7 @@
 package harness // import "go.opentelemetry.io/obi/internal/test/oats/harness"
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/grafana/oats/model"
 	"github.com/grafana/oats/testhelpers/remote"
@@ -25,6 +27,8 @@ import (
 const (
 	prebuiltOBIImage = "hatest-obi"
 	obiDockerfile    = "internal/test/integration/components/obi/Dockerfile"
+	buildAttempts    = 3
+	buildRetryDelay  = 5 * time.Second
 )
 
 type compose struct {
@@ -84,17 +88,17 @@ func newCompose(composeFile, logFile string) (*compose, error) {
 
 func (c *compose) up() error {
 	if !prebuiltOBIAvailable() {
-		return c.command("up", "--build", "--detach", "--force-recreate")
+		return c.buildAndUp()
 	}
 
 	obiServices, toBuild, err := c.splitServices()
 	if err != nil {
 		ginkgo.GinkgoWriter.Printf("prebuilt %s not used, building all services: %v\n", prebuiltOBIImage, err)
-		return c.command("up", "--build", "--detach", "--force-recreate")
+		return c.buildAndUp()
 	}
 	if len(obiServices) == 0 {
 		ginkgo.GinkgoWriter.Printf("prebuilt %s not used, no service builds the OBI Dockerfile\n", prebuiltOBIImage)
-		return c.command("up", "--build", "--detach", "--force-recreate")
+		return c.buildAndUp()
 	}
 
 	if err := c.usePrebuiltOBI(obiServices); err != nil {
@@ -102,11 +106,29 @@ func (c *compose) up() error {
 	}
 	ginkgo.GinkgoWriter.Printf("using prebuilt %s for %s\n", prebuiltOBIImage, strings.Join(obiServices, ", "))
 	if len(toBuild) > 0 {
-		if err := c.command(append([]string{"build"}, toBuild...)...); err != nil {
+		return c.buildAndUp(toBuild...)
+	}
+	return c.command("up", "--no-build", "--detach", "--force-recreate")
+}
+
+func (c *compose) buildAndUp(services ...string) error {
+	args := append([]string{"build"}, services...)
+	for attempt := 1; ; attempt++ {
+		var output bytes.Buffer
+		err := c.run(io.MultiWriter(c.logger, &output), args...)
+		if err == nil {
+			return c.command("up", "--no-build", "--detach", "--force-recreate")
+		}
+		// BuildKit can receive a truncated image layer from the registry.
+		// Retry this transport failure without retrying builds that fail to compile.
+		if attempt == buildAttempts || !strings.Contains(output.String(), "failed to solve:") ||
+			!strings.Contains(output.String(), "short read:") || !strings.Contains(output.String(), "unexpected EOF") {
 			return err
 		}
+		delay := time.Duration(attempt) * buildRetryDelay
+		fmt.Fprintf(c.logger, "Image layer download truncated, retrying build (%d/%d) in %s\n", attempt+1, buildAttempts, delay)
+		time.Sleep(delay)
 	}
-	return c.command("up", "--detach", "--force-recreate")
 }
 
 func prebuiltOBIAvailable() bool {
@@ -240,11 +262,15 @@ func (c *compose) baseArgs() []string {
 }
 
 func (c *compose) command(args ...string) error {
+	return c.run(c.logger, args...)
+}
+
+func (c *compose) run(output io.Writer, args ...string) error {
 	cmdArgs := append(c.baseArgs(), args...)
 	cmd := exec.Command("docker", cmdArgs...)
 	cmd.Env = c.env
-	cmd.Stdout = c.logger
-	cmd.Stderr = c.logger
+	cmd.Stdout = output
+	cmd.Stderr = output
 
 	if _, err := fmt.Fprintf(c.logger, "Running: docker %s\n", strings.Join(cmdArgs, " ")); err != nil {
 		return fmt.Errorf("failed to write compose command header: %w", err)
