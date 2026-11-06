@@ -1,7 +1,7 @@
 # Weaver pod for multi-node / multi-zone weaver-wired suites. Identical to
 # 08-weaver.yml but pinned (nodeAffinity) to the `otel` zone node, which is the
 # node whose 00-kind*.yml entry carries the /obi-registry extraMount and the
-# 4320 -> 32320 admin port mapping.
+# 4320 admin port mapping.
 apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -148,7 +148,7 @@ spec:
       ports:
         # weavercol's own telemetry, scraped from the host at teardown to
         # detect exports dropped before weaver (exposed via the kind
-        # extraPortMapping 8888 -> WeaverColMetricsHostPort in 00-kind*.yml,
+        # extraPortMapping 8888 -> a dynamic loopback port in 00-kind*.yml,
         # on this same otel-zone node)
         - containerPort: 8888
           name: metrics

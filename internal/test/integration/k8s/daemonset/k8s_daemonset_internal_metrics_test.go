@@ -19,10 +19,6 @@ import (
 	"go.opentelemetry.io/obi/internal/test/integration/components/promtest"
 )
 
-// prometheusHostPort is the host-mapped port of the suite's Prometheus
-// (02-prometheus-otelscrape.yml), which scrapes the otelcol's exporter.
-const prometheusHostPort = "localhost:39090"
-
 const forwardLagServiceName = "forward-lag-test"
 
 // The OBI daemonset exports its internal metrics via the otel exporter
@@ -34,7 +30,7 @@ func TestInternalMetrics_ForwardLag(t *testing.T) {
 	feat := features.New("OBI exports the kube informer forward-lag internal metric").
 		Assess("obi.kube.cache.forward.lag reaches Prometheus via the otelcol",
 			func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-				pq := promtest.Client{HostPort: prometheusHostPort}
+				pq := promtest.Client{HostPort: cluster.HostPort(9090)}
 				require.EventuallyWithT(t, func(ct *assert.CollectT) {
 					results, err := pq.Query("obi_internal_build_info")
 					require.NoError(ct, err)

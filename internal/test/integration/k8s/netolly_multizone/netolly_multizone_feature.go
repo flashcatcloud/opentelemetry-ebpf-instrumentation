@@ -13,13 +13,11 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 
+	"go.opentelemetry.io/obi/internal/test/integration/components/kube"
 	"go.opentelemetry.io/obi/internal/test/integration/components/promtest"
 )
 
-const (
-	testTimeout        = 3 * time.Minute
-	prometheusHostPort = "localhost:39090"
-)
+const testTimeout = 3 * time.Minute
 
 func FeatureMultizoneNetworkFlows() features.Feature {
 	return features.New("Multizone Network flows").
@@ -29,7 +27,7 @@ func FeatureMultizoneNetworkFlows() features.Feature {
 }
 
 func testFlowsDecoratedWithZone(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
-	pq := promtest.Client{HostPort: prometheusHostPort}
+	pq := promtest.Client{HostPort: kube.HostPort(ctx, 9090)}
 
 	// checking pod-to-pod node communication (request)
 	require.EventuallyWithT(t, func(ct *assert.CollectT) {
@@ -95,7 +93,7 @@ func testFlowsDecoratedWithZone(ctx context.Context, t *testing.T, _ *envconf.Co
 }
 
 func testInterZoneMetric(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
-	pq := promtest.Client{HostPort: prometheusHostPort}
+	pq := promtest.Client{HostPort: kube.HostPort(ctx, 9090)}
 
 	// inter-zone bytes are reported
 	require.EventuallyWithT(t, func(ct *assert.CollectT) {

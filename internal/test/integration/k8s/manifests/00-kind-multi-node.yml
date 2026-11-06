@@ -18,14 +18,15 @@ nodes:
       # testoutput folder to store coverage data
       - hostPath: ../../../../../testoutput
         containerPath: /testoutput
+    # Kind passes -1 as port 0 to Docker, which allocates the host port.
     extraPortMappings:
       # to avoid having to do port-forwarding from the Go client (a bit cumbersome process),
       # we just make visible some container ports through host ports
-      # hostPorts need to be in range 30000-32767
       # containerPort must be the "hostPort" value that needs to be
       # exposed on each Pod container
       - containerPort: 8080
-        hostPort: 38080
+        hostPort: -1
+        listenAddress: "127.0.0.1"
   - role: worker
     labels:
       cluster.x-k8s.io/cluster-name: obi-k8s-test-cluster
@@ -60,27 +61,33 @@ nodes:
       # pinned to this `otel` zone node via nodeAffinity in 08-weaver-multi-node.yml)
       - hostPath: ../../../../../schemas/obi
         containerPath: /obi-registry
+    # Kind passes -1 as port 0 to Docker, which allocates the host port.
     extraPortMappings:
       # to avoid having to do port-forwarding from the Go client (a bit cumbersome process),
       # we just make visible some container ports through host ports
-      # hostPorts need to be in range 30000-32767
       # containerPort must be the "hostPort" value that needs to be
       # exposed on each Pod container
       - containerPort: 8999
-        hostPort: 38999
+        hostPort: -1
+        listenAddress: "127.0.0.1"
       - containerPort: 9090
-        hostPort: 39090
+        hostPort: -1
+        listenAddress: "127.0.0.1"
       - containerPort: 16686
-        hostPort: 36686
+        hostPort: -1
+        listenAddress: "127.0.0.1"
       # weaver admin port (POST /stop from the test host)
       - containerPort: 4320
-        hostPort: 32320
+        hostPort: -1
+        listenAddress: "127.0.0.1"
       # weavercol telemetry (dropped-export check at teardown)
       - containerPort: 8888
-        hostPort: 32888
+        hostPort: -1
+        listenAddress: "127.0.0.1"
       # suite otelcol telemetry (first-hop dropped-export check)
       - containerPort: 8890
-        hostPort: 32889
+        hostPort: -1
+        listenAddress: "127.0.0.1"
   - role: control-plane
     labels:
       cluster.x-k8s.io/cluster-name: obi-k8s-test-cluster

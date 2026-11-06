@@ -17,15 +17,6 @@ import (
 )
 
 const (
-	// WeaverK8sAdminHostPort is the host port the kind clusters map weaver's
-	// admin port (4320) to, via the extraPortMapping in manifests/00-kind*.yml.
-	WeaverK8sAdminHostPort = 32320
-
-	// Host ports the kind clusters map the weavercol and suite-otelcol telemetry
-	// endpoints to (00-kind*.yml); validateWeaver scrapes both for tap drops.
-	WeaverColMetricsHostPort     = 32888
-	OtelcolWeaverMetricsHostPort = 32889
-
 	// weaverK8sTimeout bounds the wait-for-weaver + stop + report-read
 	// sequence. Report generation scales with the number of unique samples
 	// weaver received; the interval processor in
@@ -102,17 +93,17 @@ func (r *weaverRecorder) FailNow() {
 func (k *Kind) waitForWeaverReady() env.Func {
 	return func(ctx context.Context, _ *envconf.Config) (context.Context, error) {
 		wctx, cancel := context.WithTimeout(ctx, weaverK8sReadyTimeout)
-		weaverURL := fmt.Sprintf("http://127.0.0.1:%d/", WeaverK8sAdminHostPort)
+		weaverURL := "http://" + k.HostPort(4320) + "/"
 		if err := waitForHTTP(wctx, weaverURL); err != nil {
 			cancel()
 			return ctx, fmt.Errorf("weaver admin port not ready before tests: %w", err)
 		}
-		weavercolURL := fmt.Sprintf("http://127.0.0.1:%d/metrics", WeaverColMetricsHostPort)
+		weavercolURL := "http://" + k.HostPort(8888) + "/metrics"
 		if err := waitForHTTP(wctx, weavercolURL); err != nil {
 			cancel()
 			return ctx, fmt.Errorf("weavercol not ready before tests: %w", err)
 		}
-		otelcolURL := fmt.Sprintf("http://127.0.0.1:%d/metrics", OtelcolWeaverMetricsHostPort)
+		otelcolURL := "http://" + k.HostPort(8890) + "/metrics"
 		if err := waitForHTTP(wctx, otelcolURL); err != nil {
 			cancel()
 			return ctx, fmt.Errorf("suite otelcol telemetry not ready before tests: %w", err)
@@ -164,7 +155,7 @@ func (k *Kind) validateWeaverFinish() env.Func {
 //     kind `obi-registry` extraMount;
 //   - an OTLP-exporting otelcol that taps weaver (03-otelcol-weaver*.yml);
 //   - the kind config (00-kind*.yml) with the weaver admin extraPortMapping
-//     4320 -> WeaverK8sAdminHostPort.
+//     4320 -> a dynamically allocated loopback port.
 func (k *Kind) validateWeaver(parent context.Context, t weavercheck.TestingT) {
 	t.Helper()
 
@@ -180,7 +171,7 @@ func (k *Kind) validateWeaver(parent context.Context, t weavercheck.TestingT) {
 	// to answer, then leave a drain window covering the weavercol `interval`
 	// processor tick plus gRPC reconnect backoff, so at least one aggregated
 	// batch reaches weaver before we stop it.
-	addr := fmt.Sprintf("127.0.0.1:%d", WeaverK8sAdminHostPort)
+	addr := k.HostPort(4320)
 	if err := waitForHTTP(ctx, "http://"+addr+"/"); err != nil {
 		t.Errorf("admin port %s never became reachable (weaver pod not running?): %v", addr, err)
 		return
@@ -280,11 +271,11 @@ func (k *Kind) validateWeaver(parent context.Context, t weavercheck.TestingT) {
 // suite otelcol means the shape never reached the aggregator; a failure from
 // weavercol means the aggregated copy may never have reached weaver.
 func (k *Kind) tapDropCount(ctx context.Context) (tapDropCounts, error) {
-	suiteOtelcol, err := exporterFailedCount(ctx, OtelcolWeaverMetricsHostPort)
+	suiteOtelcol, err := exporterFailedCount(ctx, k.HostPort(8890))
 	if err != nil {
 		return tapDropCounts{}, fmt.Errorf("scraping suite otelcol exporter counters: %w", err)
 	}
-	weavercol, err := exporterFailedCount(ctx, WeaverColMetricsHostPort)
+	weavercol, err := exporterFailedCount(ctx, k.HostPort(8888))
 	if err != nil {
 		return tapDropCounts{}, fmt.Errorf("scraping weavercol exporter counters: %w", err)
 	}
@@ -293,8 +284,8 @@ func (k *Kind) tapDropCount(ctx context.Context) (tapDropCounts, error) {
 
 // exporterFailedCount sums otelcol_exporter_{send,enqueue}_failed_* from a
 // collector's telemetry endpoint on the given host port.
-func exporterFailedCount(ctx context.Context, hostPort int) (float64, error) {
-	url := fmt.Sprintf("http://127.0.0.1:%d/metrics", hostPort)
+func exporterFailedCount(ctx context.Context, hostPort string) (float64, error) {
+	url := "http://" + hostPort + "/metrics"
 	return exporterFailedCountURL(ctx, url)
 }
 

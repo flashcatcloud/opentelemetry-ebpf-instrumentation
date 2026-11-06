@@ -32,7 +32,7 @@ func TestSharedPIDNamespaceAttribution(t *testing.T) {
 			func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
 				require.EventuallyWithT(t, func(ct *assert.CollectT) {
 					// Generate traffic to the Deployment's testserver (port 8080)
-					resp, err := http.Get("http://localhost:38080/pingpong")
+					resp, err := http.Get("http://" + cluster.HostPort(8080) + "/pingpong")
 					require.NoError(ct, err)
 					if resp == nil {
 						return
@@ -48,7 +48,7 @@ func TestSharedPIDNamespaceAttribution(t *testing.T) {
 						require.Equal(ct, http.StatusOK, resp.StatusCode)
 					}()
 
-					resp, err = http.Get(jaegerQueryURL + "?service=testserver")
+					resp, err = http.Get("http://" + cluster.HostPort(16686) + "/api/traces?service=testserver")
 					require.NoError(ct, err)
 					if resp == nil {
 						return
@@ -95,7 +95,7 @@ func TestSharedPIDNamespaceAttribution(t *testing.T) {
 			func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
 				require.EventuallyWithT(t, func(ct *assert.CollectT) {
 					// Generate traffic to the hostPID DaemonSet's testserver (port 8082)
-					trafficResp, err := http.Get("http://localhost:38082/pingpong")
+					trafficResp, err := http.Get("http://" + cluster.HostPort(8082) + "/pingpong")
 					require.NoError(ct, err)
 					if trafficResp == nil {
 						return
@@ -103,7 +103,7 @@ func TestSharedPIDNamespaceAttribution(t *testing.T) {
 					defer trafficResp.Body.Close()
 					require.Equal(ct, http.StatusOK, trafficResp.StatusCode)
 
-					jaegerResp, err := http.Get(jaegerQueryURL + "?service=hostpid-httpserver")
+					jaegerResp, err := http.Get("http://" + cluster.HostPort(16686) + "/api/traces?service=hostpid-httpserver")
 					require.NoError(ct, err)
 					if jaegerResp == nil {
 						return

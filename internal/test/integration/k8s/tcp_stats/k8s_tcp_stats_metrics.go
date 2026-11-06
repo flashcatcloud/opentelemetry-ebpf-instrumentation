@@ -19,11 +19,11 @@ import (
 )
 
 const (
-	testTimeout        = 5 * time.Minute
-	prometheusHostPort = "localhost:39090"
-	pingerPodName      = "internal-pinger-tcp-stats"
-	failPingerPodName  = "internal-pinger-tcp-stats-fail"
-	closedPort         = "19999"
+	testTimeout = 5 * time.Minute
+
+	pingerPodName     = "internal-pinger-tcp-stats"
+	failPingerPodName = "internal-pinger-tcp-stats-fail"
+	closedPort        = "19999"
 
 	// A cardinality-exploded metric makes each Prometheus query cost hundreds of
 	// milliseconds, so a sub-second poll only piles up in-flight requests.
@@ -68,7 +68,7 @@ func FeatureTCPStats() features.Feature {
 }
 
 func testTCPStatsEmitted(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
-	pq := promtest.Client{HostPort: prometheusHostPort}
+	pq := promtest.Client{HostPort: kube.HostPort(ctx, 9090)}
 	require.EventuallyWithT(t, func(ct *assert.CollectT) {
 		results, err := pq.Query("obi_stat_tcp_io_bytes_total")
 		assert.NoError(ct, err)
@@ -78,7 +78,7 @@ func testTCPStatsEmitted(ctx context.Context, t *testing.T, _ *envconf.Config) c
 }
 
 func testTCPStatsIODecoration(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
-	pq := promtest.Client{HostPort: prometheusHostPort}
+	pq := promtest.Client{HostPort: kube.HostPort(ctx, 9090)}
 	require.EventuallyWithT(t, func(ct *assert.CollectT) {
 		results, err := pq.Query(pingerFlow("obi_stat_tcp_io_bytes_total"))
 		assert.NoError(ct, err)
@@ -95,7 +95,7 @@ func testTCPStatsIODecoration(ctx context.Context, t *testing.T, _ *envconf.Conf
 }
 
 func testTCPStatsRTT(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
-	pq := promtest.Client{HostPort: prometheusHostPort}
+	pq := promtest.Client{HostPort: kube.HostPort(ctx, 9090)}
 	require.EventuallyWithT(t, func(ct *assert.CollectT) {
 		counts, err := pq.Query(pingerFlow("obi_stat_tcp_rtt_seconds_count") + " > 0")
 		assert.NoError(ct, err)
@@ -117,7 +117,7 @@ func testTCPStatsRTT(ctx context.Context, t *testing.T, _ *envconf.Config) conte
 // dials. That connection is refused over loopback, whose addresses carry no
 // kubernetes metadata, so port and handshake role are what identify the series.
 func testTCPStatsFailedConnections(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
-	pq := promtest.Client{HostPort: prometheusHostPort}
+	pq := promtest.Client{HostPort: kube.HostPort(ctx, 9090)}
 	require.EventuallyWithT(t, func(ct *assert.CollectT) {
 		results, err := pq.Query(`obi_stat_tcp_failed_connections_total{` +
 			`dst_port="` + closedPort + `",` +
@@ -134,7 +134,7 @@ func testTCPStatsFailedConnections(ctx context.Context, t *testing.T, _ *envconf
 // testserver connections, decorated like the other pinger flows, and the
 // server side, whose source is the testserver pod accepting them.
 func testTCPStatsSuccessfulConnections(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
-	pq := promtest.Client{HostPort: prometheusHostPort}
+	pq := promtest.Client{HostPort: kube.HostPort(ctx, 9090)}
 	require.EventuallyWithT(t, func(ct *assert.CollectT) {
 		clientResults, err := pq.Query(pingerFlow("obi_stat_tcp_successful_connections_total") + ` > 0`)
 		assert.NoError(ct, err)

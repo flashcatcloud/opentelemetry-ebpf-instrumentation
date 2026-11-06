@@ -40,11 +40,11 @@ func TestMultiNodeTracing(t *testing.T) {
 				var trace jaeger.Trace
 				var traceID string
 				require.EventuallyWithT(t, func(ct *assert.CollectT) {
-					resp, err := http.Get("http://localhost:38080/gotracemetoo")
+					resp, err := http.Get("http://" + cluster.HostPort(8080) + "/gotracemetoo")
 					require.NoError(ct, err)
 					require.Equal(ct, http.StatusOK, resp.StatusCode)
 
-					resp, err = http.Get(jaegerQueryURL + "?service=testserver&operation=GET%20%2Fgotracemetoo")
+					resp, err = http.Get("http://" + cluster.HostPort(16686) + "/api/traces?service=testserver&operation=GET%20%2Fgotracemetoo")
 					require.NoError(ct, err)
 					if resp == nil {
 						return

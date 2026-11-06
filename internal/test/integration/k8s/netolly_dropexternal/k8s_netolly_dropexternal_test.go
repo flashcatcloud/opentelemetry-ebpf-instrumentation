@@ -25,10 +25,7 @@ import (
 	"go.opentelemetry.io/obi/internal/test/tools"
 )
 
-const (
-	testTimeout        = 3 * time.Minute
-	prometheusHostPort = "localhost:39090"
-)
+const testTimeout = 3 * time.Minute
 
 var cluster *kube.Kind
 
@@ -85,7 +82,7 @@ func TestNetworkFlowBytes_DropExternal(t *testing.T) {
 }
 
 func testNoFlowsForExternalTraffic(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
-	pq := promtest.Client{HostPort: prometheusHostPort}
+	pq := promtest.Client{HostPort: cluster.HostPort(9090)}
 
 	// testing first that internal traffic is reported (this leaves room to populate Prometheus with
 	// the inspected metrics)
