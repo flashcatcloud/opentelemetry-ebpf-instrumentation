@@ -165,6 +165,14 @@ func (p *Tracer) writePIDSampler(pid app.PID, ns uint32, fi *exec.FileInfo) {
 	}
 }
 
+func (p *Tracer) UpdatePIDSampler(pid app.PID, ns uint32, fi *exec.FileInfo) {
+	p.pidsMu.Lock()
+	defer p.pidsMu.Unlock()
+	if !p.pidsClosed {
+		p.writePIDSampler(pid, ns, fi)
+	}
+}
+
 func ensureJVMRuntimeMetricGeneration(fi *exec.FileInfo) uint64 {
 	if fi.ServiceAttrs().SDKLanguage != svc.InstrumentableJava {
 		return 0
