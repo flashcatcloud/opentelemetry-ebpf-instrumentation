@@ -20,6 +20,7 @@ concurrency:
 jobs:
   publish:
     name: Deploy schema files to GitHub Pages
+    if: github.repository == 'open-telemetry/opentelemetry-ebpf-instrumentation'
     runs-on: ubuntu-26.04
     environment:
       name: github-pages
