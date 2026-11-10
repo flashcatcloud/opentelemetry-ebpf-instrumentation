@@ -74,6 +74,7 @@ for mode in generic go; do
 log_level: debug
 trace_printer: json
 ebpf:
+  wakeup_len: 1
   track_request_headers: true
   context_propagation: headers
   buffer_sizes:

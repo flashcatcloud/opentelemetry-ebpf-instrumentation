@@ -75,15 +75,26 @@ int main(void) {
     parent.tp.trace_id[0] = 1;
     parent.tp.span_id[0] = 2;
 
-    expect(find_parent_trace_with_user_reads(&conn, 1, k_lw_thread_none, &key, 53, false) ==
+    expect(find_parent_trace_with_user_reads(&conn, 1, k_lw_thread_none, &key, 53, false, NULL) ==
                &parent,
            "socket path still finds a parent from maps");
     expect(python_lookups == 0, "socket path does not resolve Python user-memory state");
-    expect(find_parent_trace(&conn, 1, k_lw_thread_none, &key, 53) == &parent,
+    expect(find_parent_trace(&conn, 1, k_lw_thread_none, &key, 53, NULL) == &parent,
            "existing probe wrapper still finds the parent");
     expect(python_lookups == 1, "existing probe wrapper retains Python lookup");
 
     python_lookups = 0;
+    tp_info_t wire = {.ts = 1};
+    wire.trace_id[0] = 1;
+    expect(find_parent_trace_with_user_reads(&conn, 1, k_lw_thread_none, &key, 53, false, &wire) ==
+               &parent,
+           "socket path accepts the parent matching the wire trace");
+    wire.trace_id[0] = 3;
+    expect(find_parent_trace_with_user_reads(&conn, 1, k_lw_thread_none, &key, 53, false, &wire) ==
+               NULL,
+           "socket path rejects a parent from a different wire trace");
+    expect(python_lookups == 0, "wire-constrained lookup does not read Python user memory");
+
     find_trace_for_client_request_with_t_key_and_user_reads(
         &conn, 53, &key, 1, k_lw_thread_none, &tp, false);
     expect(python_lookups == 0, "client trace lookup preserves the socket restriction");
@@ -91,7 +102,8 @@ int main(void) {
            "socket client trace retains the map-backed trace and parent IDs");
 
     have_parent = false;
-    expect(find_parent_trace_with_user_reads(&conn, 1, k_lw_thread_none, &key, 53, false) == NULL,
+    expect(find_parent_trace_with_user_reads(&conn, 1, k_lw_thread_none, &key, 53, false, NULL) ==
+               NULL,
            "socket path reports no parent when maps have no matching request");
     return 0;
 }

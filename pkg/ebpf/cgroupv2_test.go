@@ -8,6 +8,7 @@ package ebpf
 import (
 	"testing"
 
+	"github.com/cilium/ebpf"
 	"github.com/prometheus/procfs"
 	"github.com/stretchr/testify/require"
 )
@@ -48,4 +49,14 @@ func TestCgroupV2MountDiscoveryRejectsSubtrees(t *testing.T) {
 	require.Empty(t, cgroupV2RootFromMounts(cases))
 	cases = append(cases, &procfs.MountInfo{FSType: "cgroup2", Root: "/", MountPoint: root})
 	require.Equal(t, root, cgroupV2RootFromMounts(cases))
+}
+
+func TestAttachCgroupSockOpsUsesAutomaticHierarchy(t *testing.T) {
+	previous := cgroupV2Once
+	cgroupV2Once = func() cgroupV2Result { return cgroupV2Result{err: errNoCgroupV2} }
+	t.Cleanup(func() { cgroupV2Once = previous })
+
+	attached, err := AttachCgroupSockOps(nil, ebpf.AttachCGroupSockOps)
+	require.ErrorIs(t, err, errNoCgroupV2)
+	require.Nil(t, attached)
 }
