@@ -29,6 +29,8 @@ typedef struct recv_args {
     // this is done because bpf2go cannot generate the go bindings of this
     // struct containing a 'iovec_iter_ctx iovec_ctx' member
     unsigned char iovec_ctx[sizeof(iovec_iter_ctx)];
+    u8 peek;
+    u8 _pad[7];
 } recv_args_t;
 
 static __always_inline enum protocol_type

@@ -925,7 +925,7 @@ int BPF_KPROBE_GUARDED(obi_kprobe_sock_def_error_report, struct sock *sk) {
     return 0;
 }
 
-static __always_inline void setup_recvmsg(u64 id, struct sock *sk, struct msghdr *msg) {
+static __always_inline void setup_recvmsg(u64 id, struct sock *sk, struct msghdr *msg, bool peek) {
     // Make sure we don't have stale event from earlier socket connection if they are
     // sent through the same socket. This mainly happens if the server overlays virtual
     // threads in the runtime.
@@ -936,6 +936,7 @@ static __always_inline void setup_recvmsg(u64 id, struct sock *sk, struct msghdr
     recv_args_t args = {
         .sock_ptr = (u64)sk,
         .msg_ptr = (u64)msg,
+        .peek = peek,
     };
 
     struct iov_iter___dummy *iov_iter = (struct iov_iter___dummy *)&msg->msg_iter;
@@ -965,7 +966,12 @@ int BPF_KPROBE_GUARDED(obi_kprobe_tcp_recvmsg,
 
     bpf_dbg_printk("=== kprobe/tcp_recvmsg id=%d, sock=%llx ===", id, sk);
 
-    setup_recvmsg(id, sk, msg);
+    // sock_recvmsg has a stable flags argument across the supported kernels;
+    // tcp_recvmsg has an extra nonblock argument on older kernels.
+    const recv_args_t *outer = bpf_map_lookup_elem(&active_recv_args, &id);
+    const bool peek =
+        outer && outer->sock_ptr == (u64)sk && outer->msg_ptr == (u64)msg && outer->peek;
+    setup_recvmsg(id, sk, msg, peek);
 
     return 0;
 }
@@ -981,7 +987,7 @@ int BPF_KPROBE_GUARDED(obi_kprobe_sock_recvmsg,
                        struct msghdr *msg,
                        int flags) {
     (void)ctx;
-    (void)flags;
+    enum { k_msg_peek = 0x2 };
 
     const u64 id = bpf_get_current_pid_tgid();
 
@@ -994,7 +1000,7 @@ int BPF_KPROBE_GUARDED(obi_kprobe_sock_recvmsg,
 
     bpf_dbg_printk("=== kprobe/sock_recvmsg sock=%llx, socket=%llx ===", sk, sock);
     if (sk) {
-        setup_recvmsg(id, sk, msg);
+        setup_recvmsg(id, sk, msg, flags & k_msg_peek);
     }
 
     return 0;
@@ -1040,6 +1046,10 @@ int BPF_KRETPROBE_GUARDED(obi_kretprobe_sock_recvmsg, int copied_len) {
             info.pid = pid_from_pid_tgid(id);
             setup_cp_support_conn_info(&info, false);
             setup_connection_to_pid_mapping(id, &info, orig_dport);
+
+            if (args->peek) {
+                goto done;
+            }
 
             const enum dns_msg_class dns_class =
                 classify_dns_msg(&info.conn, (struct msghdr *)args->msg_ptr);
@@ -1144,7 +1154,9 @@ static __always_inline int return_recvmsg(void *ctx, struct sock *in_sock, u64 i
         }
     }
 
-    if (copied_len <= 0) {
+    // Peeks still identify the socket owner, but leave the bytes queued for
+    // the consuming read. Parsing both would duplicate partial HTTP prefixes.
+    if (copied_len <= 0 || (args && args->peek)) {
         if (parse_sock_info((struct sock *)sock_ptr, &info.conn)) {
             const u16 orig_dport = info.conn.d_port;
             sort_connection_info(&info.conn);
