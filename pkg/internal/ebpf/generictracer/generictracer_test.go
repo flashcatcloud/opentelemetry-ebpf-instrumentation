@@ -262,6 +262,10 @@ func TestRingbufMetricsConstant(t *testing.T) {
 }
 
 func TestWakeupDataBytesUsesScaledRingBufSize(t *testing.T) {
+	originalSupport := tcpIteratorSupport
+	tcpIteratorSupport = func() error { return nil }
+	t.Cleanup(func() { tcpIteratorSupport = originalSupport })
+
 	cfg := &obi.Config{}
 	cfg.EBPF.WakeupLen = 500
 	cfg.EBPF.MapsConfig.GlobalScaleFactor = -3
