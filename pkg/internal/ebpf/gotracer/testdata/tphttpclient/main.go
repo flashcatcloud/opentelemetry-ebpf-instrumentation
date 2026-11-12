@@ -17,10 +17,12 @@ package main
 
 import (
 	"bufio"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 )
@@ -31,8 +33,23 @@ const staticTraceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-
 func main() {
 	first := make(chan struct{})
 	second := make(chan struct{})
+	var downstream string
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/forward" {
+			resp, err := http.Get(downstream + "/details")
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadGateway)
+				return
+			}
+			defer resp.Body.Close()
+			_, _ = io.Copy(w, resp.Body)
+			return
+		}
+		if r.URL.Path == "/details" {
+			fmt.Fprintf(w, "%d:%s", len(r.Header.Values("Traceparent")), r.Header.Get("Traceparent"))
+			return
+		}
 		fmt.Fprintf(w, "%d", len(r.Header.Values("Traceparent")))
 	})
 	holdRequest := func(release <-chan struct{}) http.HandlerFunc {
@@ -66,6 +83,9 @@ func main() {
 		req.Header = sharedHeader
 		report(responseCount(req))
 	}
+	downstream = strings.TrimSuffix(url, "/")
+	tlsServer := httptest.NewTLSServer(mux)
+	defer tlsServer.Close()
 
 	fmt.Println("READY")
 
@@ -86,8 +106,46 @@ func main() {
 			close(second)
 		case "EXIT":
 			return
+		case "FRAGMENTED":
+			report(doFragmentedRequest(downstream, http.DefaultClient))
+		case "TLS_FRAGMENTED":
+			report(doFragmentedRequest(tlsServer.URL, tlsServer.Client()))
 		}
 	}
+}
+
+func doFragmentedRequest(baseURL string, client *http.Client) (string, error) {
+	address := strings.TrimPrefix(strings.TrimPrefix(baseURL, "https://"), "http://")
+	var conn net.Conn
+	var err error
+	if strings.HasPrefix(baseURL, "https://") {
+		conn, err = tls.Dial("tcp", address, client.Transport.(*http.Transport).TLSClientConfig)
+	} else {
+		conn, err = net.Dial("tcp", address)
+	}
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close()
+	prefix := "GET /forward HTTP/1.1\r\nHost: " + address + "\r\nX-Padding: "
+	const headerOffset = 8190
+	payload := prefix + strings.Repeat("a", headerOffset-len(prefix)-2) + "\r\nTraceparent: " +
+		staticTraceparent + "\r\nConnection: close\r\n\r\n"
+	const fragmentSize = 137
+	for len(payload) > 0 {
+		n := min(len(payload), fragmentSize)
+		if _, err := io.WriteString(conn, payload[:n]); err != nil {
+			return "", err
+		}
+		payload = payload[n:]
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	return string(body), err
 }
 
 func report(count string, err error) {

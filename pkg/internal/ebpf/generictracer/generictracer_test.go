@@ -51,6 +51,22 @@ func TestSocketFiltersAvoidCurrentPIDHelper(t *testing.T) {
 	}
 }
 
+func TestHTTP1LegacyProgramsAvoidBPFLoop(t *testing.T) {
+	spec, err := LoadBpf()
+	require.NoError(t, err)
+	for _, name := range []string{
+		"obi_protocol_http_legacy", "obi_continue_protocol_http_legacy", "obi_handle_buf_with_args_legacy",
+	} {
+		program := spec.Programs[name]
+		require.NotNil(t, program)
+		for _, instruction := range program.Instructions {
+			if instruction.IsBuiltinCall() {
+				assert.NotEqual(t, asm.FnLoop, asm.BuiltinFunc(instruction.Constant), name)
+			}
+		}
+	}
+}
+
 func TestParseJVMMemoryPoolRecordDecoratesServiceByPIDNamespace(t *testing.T) {
 	service := svc.Attrs{UID: svc.UID{Name: "orders", Namespace: "prod"}}
 	currentPIDsCalls := 0
@@ -239,10 +255,33 @@ func TestJVMBPFMapsAreInternallyPinnedAndUseSharedEventsRingBuffer(t *testing.T)
 
 func TestRingbufMetricsConstant(t *testing.T) {
 	tracer := New(nil, &obi.Config{}, imetrics.NoopReporter{})
-	assert.Equal(t, false, tracer.constants()["ringbuf_metrics_enabled"])
+	assert.Equal(t, false, tracer.constants(0)["ringbuf_metrics_enabled"])
 
 	tracer = New(nil, &obi.Config{}, struct{ imetrics.NoopReporter }{})
-	assert.Equal(t, true, tracer.constants()["ringbuf_metrics_enabled"])
+	assert.Equal(t, true, tracer.constants(0)["ringbuf_metrics_enabled"])
+}
+
+func TestWakeupDataBytesUsesScaledRingBufSize(t *testing.T) {
+	originalSupport := tcpIteratorSupport
+	tcpIteratorSupport = func() error { return nil }
+	t.Cleanup(func() { tcpIteratorSupport = originalSupport })
+
+	cfg := &obi.Config{}
+	cfg.EBPF.WakeupLen = 500
+	cfg.EBPF.MapsConfig.GlobalScaleFactor = -3
+	tracer := New(nil, cfg, imetrics.NoopReporter{})
+
+	bundles, err := tracer.LoadSpecs()
+	require.NoError(t, err)
+	require.Len(t, bundles, 1)
+
+	ebpfconvenience.SetupMapSizes(bundles[0].Spec, cfg.EBPF.MapsConfig.GlobalScaleFactor)
+	loadedRingBufSize := bundles[0].Spec.Maps[BpfMapEvents].MaxEntries
+	require.Equal(t, uint32(128<<10), loadedRingBufSize)
+
+	wakeup, ok := bundles[0].Constants["wakeup_data_bytes"].(uint32)
+	require.True(t, ok)
+	assert.Equal(t, loadedRingBufSize/2, wakeup)
 }
 
 func TestPythonAsyncMapsScopePointersByProcess(t *testing.T) {
@@ -321,7 +360,7 @@ func TestJVMRuntimeMetricsConstantOverridesUseApplicationRuntimeAsFeatureGate(t 
 			}
 			tracer.cfg.JVMRuntimeMetrics.SamplingInterval = tt.samplingInterval
 
-			overrides := tracer.constants()
+			overrides := tracer.constants(0)
 
 			assert.Equal(t, tt.expectedInterval, overrides["jvm_sampling_interval_ns"])
 		})

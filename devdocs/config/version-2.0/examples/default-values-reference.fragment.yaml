@@ -215,6 +215,7 @@ extensions:
             metrics: true
             # Set to false to keep the RED metrics without the size histograms.
             body_size_metrics: true
+            request_phase_spans: true
           # The target adapter imports one shared application filter. Every
           # application protocol's trace and metric maps must equal this trace
           # map.
@@ -540,6 +541,8 @@ extensions:
           wakeup_len: 500
           batch_length: 100
           batch_timeout: 1s
+          stats:
+            wakeup_bytes: 4096
         propagation:
           context_propagation: disabled
           override_bpfloop_enabled: false
@@ -607,6 +610,9 @@ extensions:
               service_name: ""
               service_namespace: ""
         cloud:
+          # Set to false to skip cloud metadata detection at startup.
+          detection:
+            enabled: true
           # Overrides automatic cloud cluster and region detection.
           cluster_name: ""
           region: ""
