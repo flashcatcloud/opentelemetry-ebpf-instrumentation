@@ -1768,6 +1768,14 @@ func traceAttributesSelectorInternal(span *request.Span, optionalAttrs map[attr.
 		if span.Type == request.EventTypeSunRPCClient {
 			attrs = appendPeerService(attrs, span, optionalAttrs)
 		}
+	case request.EventTypeTuxedoClient, request.EventTypeTuxedoServer:
+		attrs = []attribute.KeyValue{
+			request.RPCSystem(request.RPCSystemTuxedo),
+		}
+		attrs = appendIfSet(attrs, semconv.RPCMethod, span.Method)
+		if span.Type == request.EventTypeTuxedoClient {
+			attrs = appendPeerService(attrs, span, optionalAttrs)
+		}
 	case request.EventTypeMongoClient:
 		attrs = []attribute.KeyValue{
 			request.ServerPort(span.HostPort),
@@ -1915,7 +1923,7 @@ func networkPeerAttributes(span *request.Span, optionalAttrs map[attr.Name]struc
 		request.EventTypeNATSServer:
 		addr, port = span.Peer, span.PeerPort
 	case request.EventTypeHTTPClient, request.EventTypeGRPCClient,
-		request.EventTypeSQLClient, request.EventTypeRedisClient,
+		request.EventTypeSQLClient, request.EventTypeRedisClient, request.EventTypeTuxedoClient,
 		request.EventTypeMongoClient, request.EventTypeCouchbaseClient,
 		request.EventTypeMemcachedClient, request.EventTypeAerospikeClient,
 		request.EventTypeSunRPCClient, request.EventTypeKafkaClient,
@@ -2019,9 +2027,9 @@ func spanKind(span *request.Span) trace2.SpanKind {
 	}
 
 	switch span.Type {
-	case request.EventTypeHTTP, request.EventTypeGRPC, request.EventTypeRedisServer, request.EventTypeSunRPCServer, request.EventTypeMemcachedServer, request.EventTypeSQLServer, request.EventTypeAerospikeServer:
+	case request.EventTypeHTTP, request.EventTypeGRPC, request.EventTypeRedisServer, request.EventTypeSunRPCServer, request.EventTypeMemcachedServer, request.EventTypeSQLServer, request.EventTypeAerospikeServer, request.EventTypeTuxedoServer:
 		return trace2.SpanKindServer
-	case request.EventTypeHTTPClient, request.EventTypeGRPCClient, request.EventTypeSQLClient, request.EventTypeRedisClient, request.EventTypeMongoClient, request.EventTypeCouchbaseClient, request.EventTypeMemcachedClient, request.EventTypeSunRPCClient, request.EventTypeAerospikeClient, request.EventTypeFailedConnect:
+	case request.EventTypeHTTPClient, request.EventTypeGRPCClient, request.EventTypeSQLClient, request.EventTypeRedisClient, request.EventTypeMongoClient, request.EventTypeCouchbaseClient, request.EventTypeMemcachedClient, request.EventTypeSunRPCClient, request.EventTypeAerospikeClient, request.EventTypeTuxedoClient, request.EventTypeFailedConnect:
 		return trace2.SpanKindClient
 	// A messaging span is a producer, a consumer or a client, decided by the
 	// operation rather than by the side OBI observed it from. Semantic

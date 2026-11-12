@@ -38,6 +38,11 @@ attributes:
           brief: >
             ONC/Sun RPC, detected by OBI's SunRPC instrumentation.
           stability: development
+        - id: tuxedo
+          value: 'tuxedo'
+          brief: >
+            Oracle Tuxedo ATMI, detected by OBI's Tuxedo instrumentation.
+          stability: development
     stability: release_candidate
 
   - key: onc_rpc.auth.flavor

@@ -12,9 +12,11 @@
 #include "libssl.c"
 #include "nginx.c"
 #include "nodejs.c"
+#include "oci.c"
 #include "python.c"
 #include "protocol_handler.c"
 #include "ruby.c"
+#include "tuxedo.c"
 #include "python_runtime.c"
 
 char __license[] SEC("license") = "Dual MIT/GPL";

@@ -1216,14 +1216,22 @@ func applyPartialV2Engine(cfg *obi.Config, engine schema.CaptureEngine) {
 }
 
 func instrumentationWithDefaults(instrumentation schema.Instrumentation) schema.Instrumentation {
-	if !completeInstrumentationWithoutAerospike(instrumentation) || instrumentation.Aerospike != nil {
+	if !completeRequiredInstrumentation(instrumentation) {
 		return instrumentation
 	}
 
-	aerospike := schema.AerospikeInstrumentation{
-		Enabled: schema.ProtocolEnablement{Traces: true, Metrics: true},
+	if instrumentation.Aerospike == nil {
+		aerospike := schema.AerospikeInstrumentation{
+			Enabled: schema.ProtocolEnablement{Traces: true, Metrics: true},
+		}
+		instrumentation.Aerospike = &aerospike
 	}
-	instrumentation.Aerospike = &aerospike
+	if instrumentation.Tuxedo == nil {
+		tuxedo := schema.TuxedoInstrumentation{
+			Enabled: schema.ProtocolEnablement{Traces: true, Metrics: true},
+		}
+		instrumentation.Tuxedo = &tuxedo
+	}
 	return instrumentation
 }
 
@@ -2414,7 +2422,7 @@ func appMetricsEnablement(instrumentation schema.Instrumentation, complete bool)
 	return enabled, configured
 }
 
-func completeInstrumentationWithoutAerospike(instrumentation schema.Instrumentation) bool {
+func completeRequiredInstrumentation(instrumentation schema.Instrumentation) bool {
 	return !zeroValue(instrumentation.HTTP) &&
 		!zeroValue(instrumentation.GRPC) &&
 		!zeroValue(instrumentation.SQL) &&
@@ -2427,7 +2435,9 @@ func completeInstrumentationWithoutAerospike(instrumentation schema.Instrumentat
 }
 
 func completeInstrumentation(instrumentation schema.Instrumentation) bool {
-	return completeInstrumentationWithoutAerospike(instrumentation) && instrumentation.Aerospike != nil
+	return completeRequiredInstrumentation(instrumentation) &&
+		instrumentation.Aerospike != nil &&
+		instrumentation.Tuxedo != nil
 }
 
 func completePolicy(policy schema.CapturePolicy) bool {
@@ -2563,6 +2573,11 @@ func protocolEnablement(instrumentation schema.Instrumentation, name protocolNam
 			return instrumentation.Aerospike.Enabled, true
 		}
 		return schema.ProtocolEnablement{}, false
+	case protocolTuxedo:
+		if instrumentation.Tuxedo != nil {
+			return instrumentation.Tuxedo.Enabled, true
+		}
+		return schema.ProtocolEnablement{}, false
 	default:
 		return schema.ProtocolEnablement{}, false
 	}
@@ -2591,6 +2606,11 @@ func protocolFilters(instrumentation schema.Instrumentation, name protocolName) 
 	case protocolAerospike:
 		if instrumentation.Aerospike != nil {
 			return instrumentation.Aerospike.Filters
+		}
+		return schema.SignalFilters{}
+	case protocolTuxedo:
+		if instrumentation.Tuxedo != nil {
+			return instrumentation.Tuxedo.Filters
 		}
 		return schema.SignalFilters{}
 	default:

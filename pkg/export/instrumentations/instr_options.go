@@ -23,6 +23,7 @@ const (
 	InstrumentationMemcached Instrumentation = "memcached"
 	InstrumentationSunRPC    Instrumentation = "sunrpc"
 	InstrumentationAerospike Instrumentation = "aerospike"
+	InstrumentationTuxedo    Instrumentation = "tuxedo"
 	// Traces export selectively enables only some instrumentations by
 	// default. If you add a new instrumentation type, make sure you
 	// update the TracesConfig accordingly. Metrics do ALL == "*".
@@ -48,6 +49,7 @@ const (
 	flagMemcached
 	flagSunRPC
 	flagAerospike
+	flagTuxedo
 )
 
 func instrumentationToFlag(str Instrumentation) InstrumentationSelection {
@@ -86,6 +88,8 @@ func instrumentationToFlag(str Instrumentation) InstrumentationSelection {
 		return flagSunRPC
 	case InstrumentationAerospike:
 		return flagAerospike
+	case InstrumentationTuxedo:
+		return flagTuxedo
 	}
 	return 0
 }
@@ -179,4 +183,8 @@ func (s InstrumentationSelection) SunRPCEnabled() bool {
 
 func (s InstrumentationSelection) AerospikeEnabled() bool {
 	return s&flagAerospike != 0
+}
+
+func (s InstrumentationSelection) TuxedoEnabled() bool {
+	return s&flagTuxedo != 0
 }

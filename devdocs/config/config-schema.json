@@ -2058,7 +2058,8 @@
               "nats",
               "redis",
               "sql",
-              "sunrpc"
+              "sunrpc",
+              "tuxedo"
             ]
           },
           "type": "array",
@@ -2543,7 +2544,8 @@
               "nats",
               "redis",
               "sql",
-              "sunrpc"
+              "sunrpc",
+              "tuxedo"
             ]
           },
           "type": "array",
@@ -3183,7 +3185,8 @@
               "nats",
               "redis",
               "sql",
-              "sunrpc"
+              "sunrpc",
+              "tuxedo"
             ]
           },
           "type": "array",
@@ -3202,7 +3205,8 @@
             "couchbase",
             "memcached",
             "sunrpc",
-            "aerospike"
+            "aerospike",
+            "tuxedo"
           ],
           "x-env-var": "OTEL_EBPF_TRACES_INSTRUMENTATIONS"
         },

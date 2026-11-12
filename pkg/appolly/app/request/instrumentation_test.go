@@ -28,6 +28,7 @@ func TestEventTypeInstrumentation(t *testing.T) {
 		instrumentations.InstrumentationMemcached: {EventTypeMemcachedClient, EventTypeMemcachedServer},
 		instrumentations.InstrumentationSunRPC:    {EventTypeSunRPCClient, EventTypeSunRPCServer},
 		instrumentations.InstrumentationAerospike: {EventTypeAerospikeClient, EventTypeAerospikeServer},
+		instrumentations.InstrumentationTuxedo:    {EventTypeTuxedoClient, EventTypeTuxedoServer},
 	}
 
 	for want, eventTypes := range tests {

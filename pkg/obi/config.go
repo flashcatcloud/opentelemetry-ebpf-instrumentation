@@ -284,6 +284,7 @@ var DefaultConfig = Config{
 			instrumentations.InstrumentationMemcached,
 			instrumentations.InstrumentationSunRPC,
 			instrumentations.InstrumentationAerospike,
+			instrumentations.InstrumentationTuxedo,
 			// no traces for DNS and GPU by default
 		},
 	},

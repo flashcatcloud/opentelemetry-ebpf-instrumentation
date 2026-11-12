@@ -184,6 +184,8 @@ func captureInstrumentation(cfg *obi.Config) schema.Instrumentation {
 		Filters:    aerospike.Filters,
 		BufferSize: cfg.EBPF.BufferSizes.Aerospike,
 	}
+	tuxedo := protocols[protocolTuxedo]
+	tuxedoInstrumentation := schema.TuxedoInstrumentation(tuxedo)
 
 	return schema.Instrumentation{
 		HTTP:      httpInstrumentation,
@@ -196,6 +198,7 @@ func captureInstrumentation(cfg *obi.Config) schema.Instrumentation {
 		DNS:       dnsInstrumentation,
 		GPU:       gpuInstrumentation,
 		Aerospike: &aerospikeInstrumentation,
+		Tuxedo:    &tuxedoInstrumentation,
 	}
 }
 

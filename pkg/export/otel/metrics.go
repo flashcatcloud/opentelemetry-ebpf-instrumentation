@@ -280,7 +280,7 @@ func newMetricsReporter(
 			httpGetters, mr.attributes.For(attributes.HTTPClientResponseSize))
 	}
 
-	if is.GRPCEnabled() || is.SunRPCEnabled() {
+	if is.GRPCEnabled() || is.SunRPCEnabled() || is.TuxedoEnabled() {
 		mr.attrGRPCServer = attributes.OpenTelemetryGetters(
 			mr.attrGetters, mr.attributes.For(attributes.RPCServerDuration))
 		mr.attrGRPCClient = attributes.OpenTelemetryGetters(
@@ -423,7 +423,7 @@ func (mr *MetricsReporter) otelMetricOptions() []metric.Option {
 		}
 	}
 
-	if mr.is.GRPCEnabled() || mr.is.SunRPCEnabled() || mr.is.HTTPEnabled() {
+	if mr.is.GRPCEnabled() || mr.is.SunRPCEnabled() || mr.is.TuxedoEnabled() || mr.is.HTTPEnabled() {
 		opts = append(opts,
 			metric.WithView(mr.otelHistogramConfig(attributes.RPCServerDuration.OTEL, mr.cfg.Buckets.DurationHistogram)),
 			metric.WithView(mr.otelHistogramConfig(attributes.RPCClientDuration.OTEL, mr.cfg.Buckets.DurationHistogram)),
@@ -464,7 +464,7 @@ func (mr *MetricsReporter) otelMetricOptions() []metric.Option {
 // another domain's instrument must check the owning domain, not its own: with
 // none of these features enabled the instrument is nil.
 func (mr *MetricsReporter) rpcClientRecorded() bool {
-	return mr.is.GRPCEnabled() || mr.is.SunRPCEnabled() || mr.is.HTTPEnabled()
+	return mr.is.GRPCEnabled() || mr.is.SunRPCEnabled() || mr.is.TuxedoEnabled() || mr.is.HTTPEnabled()
 }
 
 func (mr *MetricsReporter) msgPublishRecorded() bool {
@@ -569,7 +569,7 @@ func (mr *MetricsReporter) setupOtelMeters(m *Metrics, meter instrument.Meter) e
 		}
 	}
 
-	if mr.is.GRPCEnabled() || mr.is.SunRPCEnabled() || mr.is.HTTPEnabled() {
+	if mr.is.GRPCEnabled() || mr.is.SunRPCEnabled() || mr.is.TuxedoEnabled() || mr.is.HTTPEnabled() {
 		grpcDuration, err := meter.Float64Histogram(attributes.RPCServerDuration.OTEL, instrument.WithUnit(attributes.RPCServerDuration.Unit))
 		if err != nil {
 			return fmt.Errorf("creating grpc duration histogram metric: %w", err)
@@ -1177,6 +1177,16 @@ func (r *Metrics) record(span *request.Span, mr *MetricsReporter) {
 			if mr.is.SunRPCEnabled() {
 				grpcDuration, attrs := r.grpcDuration.ForRecord(span)
 				grpcDuration.Record(ctx, duration, instrument.WithAttributeSet(attrs))
+			}
+		case request.EventTypeTuxedoClient:
+			if mr.is.TuxedoEnabled() {
+				rpcClientDuration, attrs := r.grpcClientDuration.ForRecord(span)
+				rpcClientDuration.Record(ctx, duration, instrument.WithAttributeSet(attrs))
+			}
+		case request.EventTypeTuxedoServer:
+			if mr.is.TuxedoEnabled() {
+				rpcDuration, attrs := r.grpcDuration.ForRecord(span)
+				rpcDuration.Record(ctx, duration, instrument.WithAttributeSet(attrs))
 			}
 		case request.EventTypeHTTPClient:
 			// HTTP client subtypes that are database calls get recorded as db client metrics

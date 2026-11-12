@@ -26,6 +26,7 @@ func TestInstrumentationSelection(t *testing.T) {
 	assert.False(t, is.NATSEnabled())
 	assert.False(t, is.AMQPEnabled())
 	assert.False(t, is.MQEnabled())
+	assert.False(t, is.TuxedoEnabled())
 
 	is = NewInstrumentationSelection([]Instrumentation{InstrumentationGRPC, InstrumentationKafka})
 	assert.False(t, is.HTTPEnabled())
@@ -69,12 +70,17 @@ func TestInstrumentationSelection(t *testing.T) {
 	assert.False(t, is.AMQPEnabled())
 	assert.False(t, is.MQEnabled())
 	assert.True(t, is.SunRPCEnabled())
+
+	is = NewInstrumentationSelection([]Instrumentation{InstrumentationTuxedo})
+	assert.True(t, is.TuxedoEnabled())
+	assert.False(t, is.SunRPCEnabled())
 }
 
 func TestInstrumentationSelection_All(t *testing.T) {
 	is := NewInstrumentationSelection([]Instrumentation{InstrumentationALL})
 	assert.True(t, is.Enabled(InstrumentationALL))
 	assert.True(t, is.Enabled(InstrumentationAerospike))
+	assert.True(t, is.Enabled(InstrumentationTuxedo))
 	assert.True(t, is.HTTPEnabled())
 	assert.True(t, is.SQLEnabled())
 	assert.True(t, is.DBEnabled())
@@ -89,6 +95,7 @@ func TestInstrumentationSelection_All(t *testing.T) {
 	assert.True(t, is.SunRPCEnabled())
 	assert.True(t, is.DNSEnabled())
 	assert.True(t, is.GenAIEnabled())
+	assert.True(t, is.TuxedoEnabled())
 }
 
 func TestInstrumentationSelection_None(t *testing.T) {
@@ -105,4 +112,5 @@ func TestInstrumentationSelection_None(t *testing.T) {
 	assert.False(t, is.AMQPEnabled())
 	assert.False(t, is.MQEnabled())
 	assert.False(t, is.SunRPCEnabled())
+	assert.False(t, is.TuxedoEnabled())
 }

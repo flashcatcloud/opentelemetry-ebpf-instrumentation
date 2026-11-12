@@ -225,7 +225,7 @@ func Test_EmptyHostInfo(t *testing.T) {
 func makeSQLRequestTrace(sql string, subType uint8, dPort uint16, hostname string) SQLRequestTrace {
 	s := [500]uint8{}
 	copy(s[:], tocstr(sql))
-	h := [96]uint8{}
+	h := [256]uint8{}
 	copy(h[:], tocstr(hostname))
 
 	return SQLRequestTrace{
@@ -257,6 +257,12 @@ func TestSQLRequestTraceToSpan(t *testing.T) {
 		tr := makeSQLRequestTrace("SELECT id FROM users", uint8(request.DBMySQL), 5432, "")
 		span := SQLRequestTraceToSpan(&tr)
 		assert.Equal(t, int(request.DBMySQL), span.SubType)
+	})
+
+	t.Run("keeps Oracle subtype without a network port", func(t *testing.T) {
+		tr := makeSQLRequestTrace("SELECT id FROM users", uint8(request.DBOracle), 0, "")
+		span := SQLRequestTraceToSpan(&tr)
+		assert.Equal(t, int(request.DBOracle), span.SubType)
 	})
 
 	t.Run("falls back to postgres when SubType is generic and port is 5432", func(t *testing.T) {
@@ -324,6 +330,72 @@ func TestSQLRequestTraceToSpan(t *testing.T) {
 		span := SQLRequestTraceToSpan(&tr)
 		assert.Equal(t, "INSERT INTO t VALUES (1)", span.Statement)
 	})
+}
+
+func TestTuxedoRequestTraceToSpan(t *testing.T) {
+	service := [128]uint8{}
+	copy(service[:], tocstr("ACCOUNT_QUERY"))
+
+	span := TuxedoRequestTraceToSpan(&TuxedoRequestTrace{
+		Status:          1,
+		StartMonotimeNs: 100,
+		EndMonotimeNs:   250,
+		Service:         service,
+	})
+
+	assert.Equal(t, request.EventTypeTuxedoClient, span.Type)
+	assert.Equal(t, "ACCOUNT_QUERY", span.Method)
+	assert.Equal(t, int64(100), span.Start)
+	assert.Equal(t, int64(250), span.End)
+	assert.Equal(t, 1, span.Status)
+}
+
+func TestTuxedoServerRequestTraceToSpan(t *testing.T) {
+	span := TuxedoRequestTraceToSpan(&TuxedoRequestTrace{
+		Type:    EventTypeTuxedoServer,
+		Service: [128]uint8{'f', 'u', 'z', 'h', 'a', 'i', '_', '0', '1'},
+	})
+
+	assert.Equal(t, request.EventTypeTuxedoServer, span.Type)
+	assert.Equal(t, "fuzhai_01", span.Method)
+}
+
+func TestOracleConnectTarget(t *testing.T) {
+	tests := []struct {
+		name      string
+		connect   string
+		host      string
+		port      int
+		namespace string
+	}{
+		{name: "easy connect", connect: "//11.1.212.242:1521/CBS", host: "11.1.212.242", port: 1521, namespace: "CBS"},
+		{name: "descriptor service", connect: "(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=db.example)(PORT=1522))(CONNECT_DATA=(SERVICE_NAME=cbsprod)))", host: "db.example", port: 1522, namespace: "cbsprod"},
+		{name: "descriptor sid", connect: "(DESCRIPTION=(ADDRESS=(HOST=10.0.0.2)(PORT=1521))(CONNECT_DATA=(SID=ORCL)))", host: "10.0.0.2", port: 1521, namespace: "ORCL"},
+		{name: "alias", connect: "CBSDB", host: "CBSDB"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			host, port, namespace := oracleConnectTarget(test.connect)
+			assert.Equal(t, test.host, host)
+			assert.Equal(t, test.port, port)
+			assert.Equal(t, test.namespace, namespace)
+		})
+	}
+}
+
+func TestOracleSQLRequestConnectionMetadata(t *testing.T) {
+	trace := makeSQLRequestTrace(
+		"SELECT balance FROM accounts",
+		uint8(request.DBOracle),
+		0,
+		"//11.1.212.242:1521/CBS_TEST",
+	)
+
+	span := SQLRequestTraceToSpan(&trace)
+	assert.Equal(t, "11.1.212.242", span.HostName)
+	assert.Equal(t, 1521, span.HostPort)
+	assert.Equal(t, "CBS_TEST", span.DBNamespace)
 }
 
 func TestStripPattern(t *testing.T) {

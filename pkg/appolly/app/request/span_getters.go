@@ -80,6 +80,9 @@ func spanOTELGetters(name attr.Name) (attributes.Getter[*Span, attribute.KeyValu
 		getter = func(s *Span) attribute.KeyValue { return ServerPort(s.HostPort) }
 	case attr.RPCMethod:
 		getter = func(s *Span) attribute.KeyValue {
+			if s.Type == EventTypeTuxedoClient || s.Type == EventTypeTuxedoServer {
+				return semconv.RPCMethod(s.Method)
+			}
 			if s.Type == EventTypeSunRPCClient || s.Type == EventTypeSunRPCServer {
 				if method := s.SunRPCMethodForExport(); method != "" {
 					return semconv.RPCMethod(method)
@@ -100,6 +103,9 @@ func spanOTELGetters(name attr.Name) (attributes.Getter[*Span, attribute.KeyValu
 		}
 	case attr.RPCSystem:
 		getter = func(s *Span) attribute.KeyValue {
+			if s.Type == EventTypeTuxedoClient || s.Type == EventTypeTuxedoServer {
+				return RPCSystem(RPCSystemTuxedo)
+			}
 			if s.Type == EventTypeSunRPCClient || s.Type == EventTypeSunRPCServer {
 				return RPCSystem(RPCSystemONCRPC)
 			}

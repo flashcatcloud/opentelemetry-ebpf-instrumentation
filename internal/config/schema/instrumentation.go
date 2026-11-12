@@ -22,6 +22,7 @@ type Instrumentation struct {
 	DNS       DNSInstrumentation        `yaml:"dns"`
 	GPU       GPUInstrumentation        `yaml:"gpu"`
 	Aerospike *AerospikeInstrumentation `yaml:"aerospike,omitempty"`
+	Tuxedo    *TuxedoInstrumentation    `yaml:"tuxedo,omitempty"`
 }
 
 // ProtocolInstrumentation describes common trace and metric enablement and
@@ -39,6 +40,13 @@ type AerospikeInstrumentation struct {
 	BufferSize uint32             `yaml:"buffer_size"`
 }
 
+// TuxedoInstrumentation applies the documented signal defaults when the
+// optional Tuxedo section is present but incomplete.
+type TuxedoInstrumentation struct {
+	Enabled ProtocolEnablement `yaml:"enabled"`
+	Filters SignalFilters      `yaml:"filters"`
+}
+
 // UnmarshalYAML defaults omitted Aerospike signal fields to enabled.
 func (a *AerospikeInstrumentation) UnmarshalYAML(value *yaml.Node) error {
 	type plain AerospikeInstrumentation
@@ -47,6 +55,17 @@ func (a *AerospikeInstrumentation) UnmarshalYAML(value *yaml.Node) error {
 		return err
 	}
 	*a = AerospikeInstrumentation(decoded)
+	return nil
+}
+
+// UnmarshalYAML defaults omitted Tuxedo signal fields to enabled.
+func (t *TuxedoInstrumentation) UnmarshalYAML(value *yaml.Node) error {
+	type plain TuxedoInstrumentation
+	decoded := plain{Enabled: ProtocolEnablement{Traces: true, Metrics: true}}
+	if err := decodeKnownFields(value, &decoded); err != nil {
+		return err
+	}
+	*t = TuxedoInstrumentation(decoded)
 	return nil
 }
 

@@ -507,6 +507,88 @@ func (f *forkTrackingFilter) AllowForkedChild(request.PidInfo, request.PidInfo, 
 
 func (f *forkTrackingFilter) EndForkedChild(request.PidInfo, time.Duration) { f.execs++ }
 
+func TestDisableTCPIterator(t *testing.T) {
+	spec := &ebpf.CollectionSpec{Programs: map[string]*ebpf.ProgramSpec{
+		"obi_iter_tcp": {
+			Name:       "obi_iter_tcp",
+			Type:       ebpf.Tracing,
+			AttachType: ebpf.AttachTraceIter,
+			AttachTo:   "tcp",
+		},
+	}}
+
+	tracer := &Tracer{log: tlog()}
+	require.NoError(t, tracer.configureTCPIterator(spec, ebpf.ErrNotSupported))
+
+	prog := spec.Programs["obi_iter_tcp"]
+	assert.Equal(t, ebpf.Kprobe, prog.Type)
+	assert.Equal(t, ebpf.AttachNone, prog.AttachType)
+	assert.Empty(t, prog.AttachTo)
+	assert.Equal(t, asm.Instructions{asm.Mov.Imm(asm.R0, 0), asm.Return()}, prog.Instructions)
+}
+
+func TestDisableLargeBufferTailCall(t *testing.T) {
+	spec := &ebpf.CollectionSpec{Programs: map[string]*ebpf.ProgramSpec{
+		"obi_large_buf_emit_continue": {
+			Name: "obi_large_buf_emit_continue",
+			Type: ebpf.Kprobe,
+		},
+	}}
+
+	disableLargeBufferTailCall(spec)
+
+	prog := spec.Programs["obi_large_buf_emit_continue"]
+	assert.Equal(t, ebpf.Kprobe, prog.Type)
+	assert.Equal(t, asm.Instructions{asm.Mov.Imm(asm.R0, 0), asm.Return()}, prog.Instructions)
+}
+
+func TestDisableTCPProtocolProgram(t *testing.T) {
+	spec, err := LoadBpf()
+	require.NoError(t, err)
+
+	disableTCPProtocolProgram(spec)
+
+	program := spec.Programs["obi_protocol_tcp"]
+	require.NotNil(t, program)
+	assert.Equal(t, ebpf.Kprobe, program.Type)
+	assert.Len(t, program.Instructions, 2)
+}
+
+func TestDisableSocketFilterPrograms(t *testing.T) {
+	spec, err := LoadBpf()
+	require.NoError(t, err)
+
+	disableSocketFilterPrograms(spec)
+
+	for name, program := range spec.Programs {
+		if !strings.HasPrefix(name, "obi_socket") {
+			continue
+		}
+		assert.Equal(t, ebpf.SocketFilter, program.Type)
+		assert.Len(t, program.Instructions, 2)
+	}
+}
+
+func TestDisableHTTP2Programs(t *testing.T) {
+	spec := &ebpf.CollectionSpec{Programs: map[string]*ebpf.ProgramSpec{
+		"obi_protocol_http2":                  {Name: "obi_protocol_http2", Type: ebpf.Kprobe},
+		"obi_protocol_http2_grpc_frames":      {Name: "obi_protocol_http2_grpc_frames", Type: ebpf.Kprobe},
+		"obi_protocol_http_request":           {Name: "obi_protocol_http_request", Type: ebpf.Kprobe},
+		"obi_protocol_http2_unrelated_suffix": {Name: "obi_protocol_http2_unrelated_suffix", Type: ebpf.Kprobe},
+	}}
+
+	disableHTTP2Programs(spec)
+
+	for _, name := range []string{
+		"obi_protocol_http2",
+		"obi_protocol_http2_grpc_frames",
+		"obi_protocol_http2_unrelated_suffix",
+	} {
+		assert.Equal(t, asm.Instructions{asm.Mov.Imm(asm.R0, 0), asm.Return()}, spec.Programs[name].Instructions)
+	}
+	assert.Empty(t, spec.Programs["obi_protocol_http_request"].Instructions)
+}
+
 type fakeServiceFilter struct {
 	current          map[uint32]map[app.PID]svc.Attrs
 	currentPIDsCalls *int

@@ -88,3 +88,37 @@ func TestAerospikeInstrumentationRejectsUnknownFields(t *testing.T) {
 
 	require.ErrorContains(t, err, "field enabledd not found")
 }
+
+func TestTuxedoInstrumentationDefaultsOmittedSignals(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		config  string
+		traces  bool
+		metrics bool
+	}{
+		{config: "{}", traces: true, metrics: true},
+		{config: "{enabled: {metrics: false}}", traces: true, metrics: false},
+		{config: "{enabled: {traces: false, metrics: false}}", traces: false, metrics: false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.config, func(t *testing.T) {
+			var instrumentation Instrumentation
+			err := yaml.Unmarshal([]byte("tuxedo: "+test.config+"\n"), &instrumentation)
+			require.NoError(t, err)
+			require.NotNil(t, instrumentation.Tuxedo)
+			require.Equal(t, test.traces, instrumentation.Tuxedo.Enabled.Traces)
+			require.Equal(t, test.metrics, instrumentation.Tuxedo.Enabled.Metrics)
+		})
+	}
+}
+
+func TestTuxedoInstrumentationRejectsUnknownFields(t *testing.T) {
+	t.Parallel()
+
+	var instrumentation Instrumentation
+	err := yaml.Unmarshal([]byte("tuxedo: {enabledd: {traces: false}}\n"), &instrumentation)
+
+	require.ErrorContains(t, err, "field enabledd not found")
+}

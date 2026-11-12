@@ -77,6 +77,8 @@ const (
 	EventTypeSunRPCServer
 	EventTypeAerospikeClient
 	EventTypeAerospikeServer
+	EventTypeTuxedoClient
+	EventTypeTuxedoServer
 )
 
 const (
@@ -107,6 +109,7 @@ const (
 	DBPostgres
 	DBMySQL
 	DBMSSQL
+	DBOracle
 )
 
 const (
@@ -182,6 +185,10 @@ func (t EventType) String() string {
 		return "SunRPCClient"
 	case EventTypeSunRPCServer:
 		return "SunRPCServer"
+	case EventTypeTuxedoClient:
+		return "TuxedoClient"
+	case EventTypeTuxedoServer:
+		return "TuxedoServer"
 	case EventTypeRedisServer:
 		return "RedisServer"
 	case EventTypeKafkaServer:
@@ -1823,6 +1830,12 @@ func spanAttributes(s *Span) SpanAttributes {
 			attrs[attr.OncRPCProcedureName.Prom()] = procName
 		}
 		return attrs
+	case EventTypeTuxedoClient, EventTypeTuxedoServer:
+		return SpanAttributes{
+			"rpcSystem": RPCSystemTuxedo,
+			"rpcMethod": s.Method,
+			"status":    strconv.Itoa(s.Status),
+		}
 	case EventTypeGPUCudaKernelLaunch:
 		return SpanAttributes{
 			"gridSize":  strconv.FormatInt(s.ContentLength, 10),
@@ -1990,7 +2003,7 @@ func (s *Span) IsClientSpan() bool {
 	}
 
 	switch s.Type {
-	case EventTypeGRPCClient, EventTypeDNS, EventTypeHTTPClient, EventTypeRedisClient, EventTypeKafkaClient, EventTypeMQTTClient, EventTypeNATSClient, EventTypeAMQPClient, EventTypeSunRPCClient, EventTypeSQLClient, EventTypeMongoClient, EventTypeFailedConnect, EventTypeCouchbaseClient, EventTypeMemcachedClient, EventTypeAerospikeClient:
+	case EventTypeGRPCClient, EventTypeDNS, EventTypeHTTPClient, EventTypeRedisClient, EventTypeKafkaClient, EventTypeMQTTClient, EventTypeNATSClient, EventTypeAMQPClient, EventTypeSunRPCClient, EventTypeSQLClient, EventTypeMongoClient, EventTypeFailedConnect, EventTypeCouchbaseClient, EventTypeMemcachedClient, EventTypeAerospikeClient, EventTypeTuxedoClient:
 		return true
 	}
 
@@ -2013,7 +2026,7 @@ func SpanStatusCode(span *Span) string {
 		return HTTPSpanStatusCode(span)
 	case EventTypeGRPC, EventTypeGRPCClient:
 		return GrpcSpanStatusCode(span)
-	case EventTypeSQLClient, EventTypeSQLServer, EventTypeRedisClient, EventTypeRedisServer, EventTypeMongoClient, EventTypeDNS, EventTypeCouchbaseClient, EventTypeMemcachedClient, EventTypeMemcachedServer, EventTypeSunRPCClient, EventTypeSunRPCServer, EventTypeAerospikeClient, EventTypeAerospikeServer:
+	case EventTypeSQLClient, EventTypeSQLServer, EventTypeRedisClient, EventTypeRedisServer, EventTypeMongoClient, EventTypeDNS, EventTypeCouchbaseClient, EventTypeMemcachedClient, EventTypeMemcachedServer, EventTypeSunRPCClient, EventTypeSunRPCServer, EventTypeAerospikeClient, EventTypeAerospikeServer, EventTypeTuxedoClient, EventTypeTuxedoServer:
 		if span.Status != 0 {
 			return StatusCodeError
 		}
@@ -2170,9 +2183,9 @@ func (s *Span) ServiceGraphKind() string {
 	}
 
 	switch s.Type {
-	case EventTypeHTTP, EventTypeGRPC, EventTypeSunRPCServer, EventTypeRedisServer, EventTypeMemcachedServer, EventTypeSQLServer, EventTypeAerospikeServer:
+	case EventTypeHTTP, EventTypeGRPC, EventTypeSunRPCServer, EventTypeRedisServer, EventTypeMemcachedServer, EventTypeSQLServer, EventTypeAerospikeServer, EventTypeTuxedoServer:
 		return "SPAN_KIND_SERVER"
-	case EventTypeHTTPClient, EventTypeGRPCClient, EventTypeSQLClient, EventTypeRedisClient, EventTypeMongoClient, EventTypeFailedConnect, EventTypeCouchbaseClient, EventTypeMemcachedClient, EventTypeSunRPCClient, EventTypeAerospikeClient:
+	case EventTypeHTTPClient, EventTypeGRPCClient, EventTypeSQLClient, EventTypeRedisClient, EventTypeMongoClient, EventTypeFailedConnect, EventTypeCouchbaseClient, EventTypeMemcachedClient, EventTypeSunRPCClient, EventTypeAerospikeClient, EventTypeTuxedoClient:
 		return "SPAN_KIND_CLIENT"
 	case EventTypeKafkaClient, EventTypeKafkaServer,
 		EventTypeMQTTClient, EventTypeMQTTServer,
@@ -2335,6 +2348,11 @@ func (s *Span) TraceName() string {
 			return method
 		}
 		return RPCSystemONCRPC
+	case EventTypeTuxedoClient, EventTypeTuxedoServer:
+		if s.Method != "" {
+			return s.Method
+		}
+		return RPCSystemTuxedo
 	case EventTypeMongoClient, EventTypeCouchbaseClient:
 		return dbSpanName(s.Method, cmp.Or(s.Path, s.DBNamespace), dbSystemNameForSpan(s))
 	case EventTypeManualSpan:
@@ -2520,6 +2538,8 @@ func (s *Span) DBSystemName() attribute.KeyValue {
 			return semconv.DBSystemNameMySQL
 		case int(DBMSSQL):
 			return semconv.DBSystemNameMicrosoftSQLServer
+		case int(DBOracle):
+			return semconv.DBSystemNameOracleDB
 		}
 	}
 

@@ -40,13 +40,14 @@ import (
 	"go.opentelemetry.io/obi/pkg/pipe/msg"
 )
 
-//go:generate $BPF2GO -cc $BPF_CLANG -cflags $BPF_CFLAGS -target $BPF_TARGETS -type protocol_type -type event_type -type http_request_trace_t -type sql_request_trace_t -type http_info_t -type connection_info_t -type http2_grpc_request_t -type tcp_req_t -type kafka_client_req_t -type kafka_go_req_t -type redis_client_req_t -type tcp_large_buffer_t -type otel_span_t -type channel_link_trace_t -type go_auto_span_t -type mongo_go_client_req_t -type dns_req_t -type node_span_event_t -type process_event_t -type pid_namespace_mode -type valid_pids_size -type ringbuf_write_stats_t -type ringbuf_id -type sampler_t -type exception_event_header_t -type exception_runtime -type exception_owner -type pid_info_t Bpf ../../../bpf/common/common.c -- -I../../../bpf
+//go:generate $BPF2GO -cc $BPF_CLANG -cflags $BPF_CFLAGS -target $BPF_TARGETS -type protocol_type -type event_type -type http_request_trace_t -type sql_request_trace_t -type tuxedo_request_trace_t -type http_info_t -type connection_info_t -type http2_grpc_request_t -type tcp_req_t -type kafka_client_req_t -type kafka_go_req_t -type redis_client_req_t -type tcp_large_buffer_t -type otel_span_t -type channel_link_trace_t -type go_auto_span_t -type mongo_go_client_req_t -type dns_req_t -type node_span_event_t -type process_event_t -type pid_namespace_mode -type valid_pids_size -type ringbuf_write_stats_t -type ringbuf_id -type sampler_t -type exception_event_header_t -type exception_runtime -type exception_owner -type pid_info_t Bpf ../../../bpf/common/common.c -- -I../../../bpf
 
 // HTTPRequestTrace contains information from an HTTP request as directly received from the
 // eBPF layer. This contains low-level C structures for accurate binary read from ring buffer.
 type (
 	HTTPRequestTrace     BpfHttpRequestTraceT
 	SQLRequestTrace      BpfSqlRequestTraceT
+	TuxedoRequestTrace   BpfTuxedoRequestTraceT
 	BPFHTTPInfo          BpfHttpInfoT
 	BPFConnInfo          BpfConnectionInfoT
 	TCPRequestInfo       BpfTcpReqT
@@ -107,6 +108,8 @@ const (
 	EventTypeJVMGCDuration         = uint8(BpfEventTypeK_eventTypeJvmGcDuration) // JVM garbage-collection duration
 	EventTypeProcessFork           = uint8(BpfEventTypeK_eventTypeProcessFork)   // An instrumented process forked a process
 	EventTypeProcessExec           = uint8(BpfEventTypeK_eventTypeProcessExec)   // A forked process ran exec
+	EventTypeTuxedoClient          = uint8(BpfEventTypeK_eventTypeTuxedoClient)  // Tuxedo ATMI client call
+	EventTypeTuxedoServer          = uint8(BpfEventTypeK_eventTypeTuxedoServer)  // Tuxedo ATMI service invocation
 )
 
 // Kernel-side classification. These alias the bpf2go-generated constants
@@ -643,6 +646,9 @@ func ReadBPFTraceAsSpan(parseCtx *EBPFParseContext, cfg *config.EBPFTracer, reco
 	case EventTypeSQL:
 		span, ignore, err := ReadSQLRequestTraceAsSpan(record)
 		return finalizeParsedSpan(parseCtx, span, ignore, err)
+	case EventTypeTuxedoClient, EventTypeTuxedoServer:
+		span, ignore, err := ReadTuxedoRequestTraceAsSpan(record)
+		return finalizeParsedSpan(parseCtx, span, ignore, err)
 	case EventTypeKHTTP:
 		span, ignore, err := ReadHTTPInfoIntoSpan(parseCtx, record, filter)
 		return finalizeParsedSpan(parseCtx, span, ignore, err)
@@ -733,6 +739,15 @@ func ReadSQLRequestTraceAsSpan(record *ringbuf.Record) (request.Span, bool, erro
 	}
 
 	return SQLRequestTraceToSpan(event), false, nil
+}
+
+func ReadTuxedoRequestTraceAsSpan(record *ringbuf.Record) (request.Span, bool, error) {
+	event, err := ReinterpretCast[TuxedoRequestTrace](record.RawSample)
+	if err != nil {
+		return request.Span{}, true, err
+	}
+
+	return TuxedoRequestTraceToSpan(event), false, nil
 }
 
 type KernelLockdown uint8

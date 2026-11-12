@@ -42,6 +42,8 @@ func (t EventType) Instrumentation() (instrumentations.Instrumentation, bool) {
 		return instrumentations.InstrumentationSunRPC, true
 	case EventTypeAerospikeClient, EventTypeAerospikeServer:
 		return instrumentations.InstrumentationAerospike, true
+	case EventTypeTuxedoClient, EventTypeTuxedoServer:
+		return instrumentations.InstrumentationTuxedo, true
 	default:
 		return "", false
 	}

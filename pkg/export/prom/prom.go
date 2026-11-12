@@ -384,7 +384,7 @@ func newReporter(
 
 	var attrGRPCDuration, attrGRPCClientDuration []attributes.Field[*request.Span, string]
 
-	if is.GRPCEnabled() || is.SunRPCEnabled() {
+	if is.GRPCEnabled() || is.SunRPCEnabled() || is.TuxedoEnabled() {
 		rpcServerAttrs := attrsProvider.For(attributes.RPCServerDuration)
 		rpcClientAttrs := attrsProvider.For(attributes.RPCClientDuration)
 		attrGRPCDuration = attributes.PrometheusGetters(attributeGetters, rpcServerAttrs)
@@ -608,7 +608,7 @@ func newReporter(
 				NativeHistogramMinResetDuration: cfg.NativeHistogram.MinResetDuration,
 			}, labelNames(attrHTTPClientDuration)).MetricVec, timeNow, cfg.TTL)
 		}),
-		grpcDuration: optionalHistogramProvider(is.GRPCEnabled() || is.SunRPCEnabled() || is.HTTPEnabled(), func() *Expirer[prometheus.Histogram] {
+		grpcDuration: optionalHistogramProvider(is.GRPCEnabled() || is.SunRPCEnabled() || is.TuxedoEnabled() || is.HTTPEnabled(), func() *Expirer[prometheus.Histogram] {
 			return NewExpirer[prometheus.Histogram](prometheus.NewHistogramVec(prometheus.HistogramOpts{
 				Name:                            attributes.RPCServerDuration.Prom,
 				Help:                            "duration of RPC service calls from the server side, in seconds",
@@ -618,7 +618,7 @@ func newReporter(
 				NativeHistogramMinResetDuration: cfg.NativeHistogram.MinResetDuration,
 			}, labelNames(attrGRPCDuration)).MetricVec, timeNow, cfg.TTL)
 		}),
-		grpcClientDuration: optionalHistogramProvider(is.GRPCEnabled() || is.SunRPCEnabled() || is.HTTPEnabled(), func() *Expirer[prometheus.Histogram] {
+		grpcClientDuration: optionalHistogramProvider(is.GRPCEnabled() || is.SunRPCEnabled() || is.TuxedoEnabled() || is.HTTPEnabled(), func() *Expirer[prometheus.Histogram] {
 			return NewExpirer[prometheus.Histogram](prometheus.NewHistogramVec(prometheus.HistogramOpts{
 				Name:                            attributes.RPCClientDuration.Prom,
 				Help:                            "duration of RPC service calls from the client side, in seconds",
@@ -1003,7 +1003,7 @@ func newReporter(
 			}
 		}
 
-		if is.GRPCEnabled() || is.SunRPCEnabled() {
+		if is.GRPCEnabled() || is.SunRPCEnabled() || is.TuxedoEnabled() {
 			registeredMetrics = append(registeredMetrics,
 				mr.grpcClientDuration,
 				mr.grpcDuration,
@@ -1297,7 +1297,7 @@ func traceExemplar(span *request.Span) prometheus.Labels {
 // another domain's histogram must check the owning domain, not its own: with
 // none of these features enabled the histogram is nil.
 func (r *metricsReporter) rpcClientRecorded() bool {
-	return r.is.GRPCEnabled() || r.is.SunRPCEnabled() || r.is.HTTPEnabled()
+	return r.is.GRPCEnabled() || r.is.SunRPCEnabled() || r.is.TuxedoEnabled() || r.is.HTTPEnabled()
 }
 
 func (r *metricsReporter) msgPublishRecorded() bool {
@@ -1402,6 +1402,14 @@ func (r *metricsReporter) observe(span *request.Span) {
 			}
 		case request.EventTypeSunRPCServer:
 			if r.is.SunRPCEnabled() {
+				r.observeHistogram(r.grpcDuration.WithLabelValues(labelValues(span, r.attrGRPCDuration)...).Metric, duration, span)
+			}
+		case request.EventTypeTuxedoClient:
+			if r.is.TuxedoEnabled() {
+				r.observeHistogram(r.grpcClientDuration.WithLabelValues(labelValues(span, r.attrGRPCClientDuration)...).Metric, duration, span)
+			}
+		case request.EventTypeTuxedoServer:
+			if r.is.TuxedoEnabled() {
 				r.observeHistogram(r.grpcDuration.WithLabelValues(labelValues(span, r.attrGRPCDuration)...).Metric, duration, span)
 			}
 		case request.EventTypeRedisClient:

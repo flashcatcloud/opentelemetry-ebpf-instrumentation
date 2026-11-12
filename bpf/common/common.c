@@ -27,6 +27,7 @@
 // counterparts (structs, and constants for enums)
 const http_request_trace_t *unused_4 __attribute__((unused));
 const sql_request_trace_t *unused_3 __attribute__((unused));
+const tuxedo_request_trace_t *unused_tuxedo __attribute__((unused));
 const tcp_req_t *unused_5 __attribute__((unused));
 const kafka_client_req_t *unused_6 __attribute__((unused));
 const redis_client_req_t *unused_7 __attribute__((unused));

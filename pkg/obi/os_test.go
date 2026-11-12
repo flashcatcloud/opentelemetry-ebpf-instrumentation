@@ -31,6 +31,7 @@ var overrideKernelVersion = func(tc testCase) {
 
 func TestCheckOSSupport_Supported(t *testing.T) {
 	isRHELBased = func() bool { return false }
+	isKylinV10 = func() bool { return false }
 	hasBTF = func() bool { return true }
 	for _, tc := range []testCase{
 		{maj: 5, min: 8},
@@ -46,6 +47,7 @@ func TestCheckOSSupport_Supported(t *testing.T) {
 
 func TestCheckOSSupport_Unsupported(t *testing.T) {
 	isRHELBased = func() bool { return false }
+	isKylinV10 = func() bool { return false }
 	hasBTF = func() bool { return true }
 	for _, tc := range []testCase{
 		{maj: 0, min: 0},
@@ -62,6 +64,7 @@ func TestCheckOSSupport_Unsupported(t *testing.T) {
 }
 
 func TestCheckOSSupport_RHELBased(t *testing.T) {
+	isKylinV10 = func() bool { return false }
 	hasBTF = func() bool { return true }
 	for _, tc := range []struct {
 		name     string
@@ -88,13 +91,77 @@ func TestCheckOSSupport_RHELBased(t *testing.T) {
 	}
 }
 
+func TestCheckOSSupport_KylinV10(t *testing.T) {
+	isRHELBased = func() bool { return false }
+	hasBTF = func() bool { return true }
+	for _, tc := range []struct {
+		name      string
+		isKylin   bool
+		maj, min  int
+		wantError bool
+	}{
+		{name: "Kylin V10 4.19 supported", isKylin: true, maj: 4, min: 19},
+		{name: "Kylin V10 4.18 unsupported", isKylin: true, maj: 4, min: 18, wantError: true},
+		{name: "non-Kylin 4.19 unsupported", maj: 4, min: 19, wantError: true},
+		{name: "Kylin V10 5.7 unsupported", isKylin: true, maj: 5, min: 7, wantError: true},
+		{name: "Kylin V10 5.8 supported", isKylin: true, maj: 5, min: 8},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			overrideKernelVersion(testCase{tc.maj, tc.min})
+			kylin := tc.isKylin
+			isKylinV10 = func() bool { return kylin }
+			if tc.wantError {
+				require.Error(t, checkOSSupport())
+			} else {
+				require.NoError(t, checkOSSupport())
+			}
+		})
+	}
+}
+
 func TestCheckOSSupport_NoBTF(t *testing.T) {
 	overrideKernelVersion(testCase{6, 0})
 	isRHELBased = func() bool { return false }
+	isKylinV10 = func() bool { return false }
 	hasBTF = func() bool { return false }
 	err := checkOSSupport()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "BTF")
+}
+
+func TestParseOSReleaseIsKylinV10(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{name: "Kylin V10", content: "ID=\"kylin\"\nVERSION_ID=\"V10\"\n", want: true},
+		{name: "Kylin V10 unquoted", content: "ID=kylin\nVERSION_ID=10\n", want: true},
+		{name: "Kylin V11", content: "ID=kylin\nVERSION_ID=V11\n", want: false},
+		{name: "other V10", content: "ID=other\nVERSION_ID=V10\n", want: false},
+		{name: "missing version", content: "ID=kylin\n", want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, parseOSReleaseIsKylinV10([]byte(tc.content)))
+		})
+	}
+}
+
+func TestParseProcVersionIsKylinV10(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{name: "Kylin V10", content: "Linux version 4.19.90-89.11.v2401.ky10.x86_64", want: true},
+		{name: "Kylin V10 uppercase", content: "Linux version 4.19.90.KY10.x86_64", want: true},
+		{name: "other Kylin", content: "Linux version 5.10.0.ky11.x86_64", want: false},
+		{name: "generic", content: "Linux version 4.19.90-generic", want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, parseProcVersionIsKylinV10([]byte(tc.content)))
+		})
+	}
 }
 
 func TestParseOSReleaseIsRHEL(t *testing.T) {

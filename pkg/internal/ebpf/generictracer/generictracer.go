@@ -14,12 +14,14 @@ import (
 	"maps"
 	"math"
 	"os"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 	"unsafe"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/asm"
 	"github.com/hashicorp/golang-lru/v2/expirable"
 	"github.com/vishvananda/netlink"
 
@@ -223,7 +225,55 @@ func (p *Tracer) LoadSpecs() ([]*ebpfcommon.SpecBundle, error) {
 		ebpfcommon.DisableJavaHTTP1Atomics(spec)
 	}
 
+	if major, _ := ebpfcommon.KernelVersion(); major < 5 {
+		p.log.Info("socket filters, large buffer, generic TCP, and HTTP/2 programs disabled on kernel versions before 5.0")
+		disableSocketFilterPrograms(spec)
+		disableLargeBufferTailCall(spec)
+		disableTCPProtocolProgram(spec)
+		disableHTTP2Programs(spec)
+	}
+
 	return []*ebpfcommon.SpecBundle{{Spec: spec, Objects: &p.bpfObjects, Constants: p.constants()}}, nil
+}
+
+func disableLargeBufferTailCall(spec *ebpf.CollectionSpec) {
+	disableKprobeProgram(spec, "obi_large_buf_emit_continue")
+}
+
+func disableTCPProtocolProgram(spec *ebpf.CollectionSpec) {
+	disableKprobeProgram(spec, "obi_protocol_tcp")
+}
+
+func disableSocketFilterPrograms(spec *ebpf.CollectionSpec) {
+	for name := range spec.Programs {
+		if strings.HasPrefix(name, "obi_socket") {
+			disableProgram(spec, name, ebpf.SocketFilter)
+		}
+	}
+}
+
+func disableHTTP2Programs(spec *ebpf.CollectionSpec) {
+	for name := range spec.Programs {
+		if strings.HasPrefix(name, "obi_protocol_http2") {
+			disableKprobeProgram(spec, name)
+		}
+	}
+}
+
+func disableKprobeProgram(spec *ebpf.CollectionSpec, name string) {
+	disableProgram(spec, name, ebpf.Kprobe)
+}
+
+func disableProgram(spec *ebpf.CollectionSpec, name string, programType ebpf.ProgramType) {
+	spec.Programs[name] = &ebpf.ProgramSpec{
+		Name: name,
+		Type: programType,
+		Instructions: asm.Instructions{
+			asm.Mov.Imm(asm.R0, 0),
+			asm.Return(),
+		},
+		License: "Dual MIT/GPL",
+	}
 }
 
 func (p *Tracer) constants() map[string]any {
@@ -450,6 +500,79 @@ func (p *Tracer) Tracepoints() map[string]ebpfcommon.ProbeDesc {
 
 func (p *Tracer) UProbes() map[string]map[string][]*ebpfcommon.ProbeDesc {
 	m := map[string]map[string][]*ebpfcommon.ProbeDesc{
+		"": {
+			"RUNSERVER": {{
+				Required: false,
+				Start:    p.bpfObjects.ObiUprobeTuxedoRunserver,
+				End:      p.bpfObjects.ObiUretprobeTuxedoRunserver,
+			}},
+		},
+		"libclntsh.so": {
+			"OCIServerAttach": {{
+				Required: false,
+				Start:    p.bpfObjects.ObiUprobeOciServerAttach,
+				End:      p.bpfObjects.ObiUretprobeOciServerAttach,
+			}},
+			"OCIAttrSet": {{
+				Required: false,
+				Start:    p.bpfObjects.ObiUprobeOciAttrSet,
+			}},
+			"OCIServerDetach": {{
+				Required: false,
+				Start:    p.bpfObjects.ObiUprobeOciServerDetach,
+			}},
+			"OCIHandleFree": {{
+				Required: false,
+				Start:    p.bpfObjects.ObiUprobeOciHandleFree,
+			}},
+			"OCIStmtPrepare2": {{
+				Required: false,
+				Start:    p.bpfObjects.ObiUprobeOciStmtPrepare2,
+				End:      p.bpfObjects.ObiUretprobeOciStmtPrepare2,
+			}},
+			"OCIStmtPrepare": {{
+				Required: false,
+				Start:    p.bpfObjects.ObiUprobeOciStmtPrepare,
+			}},
+			"OCIStmtExecute": {{
+				Required: false,
+				Start:    p.bpfObjects.ObiUprobeOciStmtExecute,
+				End:      p.bpfObjects.ObiUretprobeOciStmtExecute,
+			}},
+			"OCIStmtRelease": {{
+				Required: false,
+				Start:    p.bpfObjects.ObiUprobeOciStmtRelease,
+			}},
+		},
+		"libtux.so": {
+			"tpreturn": {{
+				Required: false,
+				Start:    p.bpfObjects.ObiUprobeTpreturn,
+			}},
+			"tpforward": {{
+				Required: false,
+				Start:    p.bpfObjects.ObiUprobeTpforward,
+			}},
+			"tpcall": {{
+				Required: false,
+				Start:    p.bpfObjects.ObiUprobeTpcall,
+				End:      p.bpfObjects.ObiUretprobeTpcall,
+			}},
+			"tpacall": {{
+				Required: false,
+				Start:    p.bpfObjects.ObiUprobeTpacall,
+				End:      p.bpfObjects.ObiUretprobeTpacall,
+			}},
+			"tpgetrply": {{
+				Required: false,
+				Start:    p.bpfObjects.ObiUprobeTpgetrply,
+				End:      p.bpfObjects.ObiUretprobeTpgetrply,
+			}},
+			"tpcancel": {{
+				Required: false,
+				Start:    p.bpfObjects.ObiUprobeTpcancel,
+			}},
+		},
 		"libssl.so": {
 			"SSL_read": {{
 				Required: false,

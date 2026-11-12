@@ -37,7 +37,8 @@ enum : u32 {
     k_host_len = 64, // can be a fully qualified DNS name
     k_traceparent_len = 55,
     k_sql_max_len = 500,
-    k_sql_hostname_max_len = 96,
+    k_sql_hostname_max_len = 256,
+    k_tuxedo_service_max_len = 128,
     k_kafka_max_len = 256,
     k_redis_max_len = 256,
     k_mongo_max_len = 256,
@@ -110,6 +111,19 @@ typedef struct sql_request_trace {
     unsigned char sql[k_sql_max_len];
     unsigned char hostname[k_sql_hostname_max_len];
 } sql_request_trace_t;
+
+typedef struct tuxedo_request_trace {
+    u8 type; // Must be first
+    u8 async;
+    u16 _pad;
+    s32 status;
+    pid_info pid;
+    u32 _pad1;
+    u64 start_monotime_ns;
+    u64 end_monotime_ns;
+    tp_info_t tp;
+    unsigned char service[k_tuxedo_service_max_len];
+} tuxedo_request_trace_t;
 
 typedef struct kafka_client_req {
     u8 type; // Must be first

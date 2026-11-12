@@ -6,7 +6,9 @@ package ebpfcommon // import "go.opentelemetry.io/obi/pkg/ebpf/common"
 import (
 	"bufio"
 	"log/slog"
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 	"unsafe"
@@ -337,7 +339,17 @@ func SQLRequestTraceToSpan(trace *SQLRequestTrace) request.Span {
 	}
 
 	hostname := cstr(trace.Hostname[:])
-	if idx := strings.LastIndex(hostname, ":"); idx != -1 {
+	dbNamespace := ""
+	if trace.SubType == uint8(request.DBOracle) {
+		connectHost, connectPort, connectNamespace := oracleConnectTarget(hostname)
+		if connectHost != "" {
+			hostname = connectHost
+		}
+		if connectPort != 0 {
+			hostPort = connectPort
+		}
+		dbNamespace = connectNamespace
+	} else if idx := strings.LastIndex(hostname, ":"); idx != -1 {
 		hostname = hostname[:idx]
 	}
 
@@ -381,5 +393,79 @@ func SQLRequestTraceToSpan(trace *SQLRequestTrace) request.Span {
 		},
 		Statement:      sql,
 		DBQuerySummary: sqlprune.SQLQuerySummary(method, tables),
+		DBNamespace:    dbNamespace,
+	}
+}
+
+func oracleConnectTarget(connect string) (string, int, string) {
+	connect = strings.TrimSpace(connect)
+	if connect == "" {
+		return "", 0, ""
+	}
+
+	if target := strings.TrimPrefix(connect, "//"); target != connect {
+		hostPort, service, _ := strings.Cut(target, "/")
+		host, port := splitOracleHostPort(hostPort)
+		return host, port, service
+	}
+
+	host := oracleDescriptorValue(connect, "HOST")
+	port, _ := strconv.Atoi(oracleDescriptorValue(connect, "PORT"))
+	service := oracleDescriptorValue(connect, "SERVICE_NAME")
+	if service == "" {
+		service = oracleDescriptorValue(connect, "SID")
+	}
+	if host != "" || port != 0 || service != "" {
+		return host, port, service
+	}
+
+	host, port = splitOracleHostPort(connect)
+	return host, port, ""
+}
+
+func splitOracleHostPort(target string) (string, int) {
+	host, portText, err := net.SplitHostPort(target)
+	if err != nil {
+		return target, 0
+	}
+	port, _ := strconv.Atoi(portText)
+	return host, port
+}
+
+func oracleDescriptorValue(descriptor, key string) string {
+	upper := strings.ToUpper(descriptor)
+	marker := "(" + key + "="
+	start := strings.Index(upper, marker)
+	if start < 0 {
+		return ""
+	}
+	value := descriptor[start+len(marker):]
+	if end := strings.IndexByte(value, ')'); end >= 0 {
+		value = value[:end]
+	}
+	return strings.TrimSpace(value)
+}
+
+func TuxedoRequestTraceToSpan(trace *TuxedoRequestTrace) request.Span {
+	eventType := request.EventTypeTuxedoClient
+	if trace.Type == EventTypeTuxedoServer {
+		eventType = request.EventTypeTuxedoServer
+	}
+	return request.Span{
+		Type:         eventType,
+		Method:       cstr(trace.Service[:]),
+		RequestStart: int64(trace.StartMonotimeNs),
+		Start:        int64(trace.StartMonotimeNs),
+		End:          int64(trace.EndMonotimeNs),
+		Status:       int(trace.Status),
+		TraceID:      trace.Tp.TraceId,
+		SpanID:       trace.Tp.SpanId,
+		ParentSpanID: trace.Tp.ParentId,
+		TraceFlags:   trace.Tp.Flags,
+		Pid: request.PidInfo{
+			HostPID:   app.PID(trace.Pid.HostPid),
+			UserPID:   app.PID(trace.Pid.UserPid),
+			Namespace: trace.Pid.Ns,
+		},
 	}
 }

@@ -41,4 +41,6 @@ enum event_type : u8 {
     k_event_type_jvm_gc_duration = 32,
     k_event_type_process_fork = 33,
     k_event_type_process_exec = 34,
+    k_event_type_tuxedo_client = 35,
+    k_event_type_tuxedo_server = 36,
 };

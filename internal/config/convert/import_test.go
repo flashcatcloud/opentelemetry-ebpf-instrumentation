@@ -431,6 +431,40 @@ func TestV2ToRuntimeCompleteInstrumentationDefaultsMissingAerospike(t *testing.T
 	require.Contains(t, got.Traces.Instrumentations, instrumentations.InstrumentationAerospike)
 }
 
+func TestV2ToRuntimeTuxedoInstrumentation(t *testing.T) {
+	t.Parallel()
+
+	ext, err := schema.ParseReceiverYAML([]byte(`version: "2.0"
+instrumentation:
+  tuxedo:
+    enabled:
+      traces: true
+      metrics: false
+`))
+	require.NoError(t, err)
+
+	got, err := V2ToRuntime(ext)
+	require.NoError(t, err)
+
+	require.Contains(t, got.Traces.Instrumentations, instrumentations.InstrumentationTuxedo)
+	require.NotContains(t, got.OTELMetrics.Instrumentations, instrumentations.InstrumentationTuxedo)
+	require.NotContains(t, got.Prometheus.Instrumentations, instrumentations.InstrumentationTuxedo)
+}
+
+func TestV2ToRuntimeCompleteInstrumentationDefaultsMissingTuxedo(t *testing.T) {
+	t.Parallel()
+
+	_, ext := RuntimeToV2(nil)
+	ext.Capture.Instrumentation.Tuxedo = nil
+	ext.Capture.Instrumentation.HTTP.Enabled.Traces = false
+
+	got, err := V2ToRuntime(ext)
+	require.NoError(t, err)
+
+	require.NotContains(t, got.Traces.Instrumentations, instrumentations.InstrumentationHTTP)
+	require.Contains(t, got.Traces.Instrumentations, instrumentations.InstrumentationTuxedo)
+}
+
 func TestV2ToRuntimeCustomFoundation(t *testing.T) {
 	t.Parallel()
 

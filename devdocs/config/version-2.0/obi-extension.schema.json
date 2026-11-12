@@ -1908,6 +1908,17 @@
             },
             "filters": {}
           }
+        },
+        "tuxedo": {
+          "$ref": "#/$defs/InstrumentationProtocol",
+          "description": "Oracle Tuxedo ATMI instrumentation controls.\nIf omitted, Tuxedo defaults are used.\n",
+          "default": {
+            "enabled": {
+              "traces": true,
+              "metrics": true
+            },
+            "filters": {}
+          }
         }
       },
       "default": {
@@ -1975,6 +1986,13 @@
           "filters": {}
         },
         "aerospike": {
+          "enabled": {
+            "traces": true,
+            "metrics": true
+          },
+          "filters": {}
+        },
+        "tuxedo": {
           "enabled": {
             "traces": true,
             "metrics": true

@@ -374,6 +374,14 @@ extensions:
             traces: {}
             metrics: {}
           enabled_mode: auto
+        # Oracle Tuxedo ATMI client instrumentation.
+        tuxedo:
+          enabled:
+            traces: true
+            metrics: true
+          filters:
+            traces: {}
+            metrics: {}
 
       # runtimes controls injection of language-specific runtime instrumentation mechanisms.
       # These are independent from protocol instrumentation (HTTP, gRPC, etc.) and are used

@@ -19,7 +19,7 @@ import (
 )
 
 func TestSpanClientServer(t *testing.T) {
-	for _, st := range []EventType{EventTypeHTTP, EventTypeGRPC, EventTypeKafkaServer, EventTypeMQTTServer, EventTypeNATSServer, EventTypeSunRPCServer, EventTypeRedisServer, EventTypeMemcachedServer, EventTypeSQLServer} {
+	for _, st := range []EventType{EventTypeHTTP, EventTypeGRPC, EventTypeKafkaServer, EventTypeMQTTServer, EventTypeNATSServer, EventTypeSunRPCServer, EventTypeRedisServer, EventTypeMemcachedServer, EventTypeSQLServer, EventTypeTuxedoServer} {
 		span := &Span{
 			Type: st,
 		}
@@ -54,6 +54,8 @@ func TestEventTypeString(t *testing.T) {
 		EventTypeAMQPClient:      "AMQPClient",
 		EventTypeSunRPCClient:    "SunRPCClient",
 		EventTypeSunRPCServer:    "SunRPCServer",
+		EventTypeTuxedoClient:    "TuxedoClient",
+		EventTypeTuxedoServer:    "TuxedoServer",
 		EventTypeRedisServer:     "RedisServer",
 		EventTypeMemcachedServer: "MemcachedServer",
 		EventTypeKafkaServer:     "KafkaServer",
@@ -77,6 +79,8 @@ func TestKindString(t *testing.T) {
 		{Type: EventTypeRedisServer}:                           "SPAN_KIND_SERVER",
 		{Type: EventTypeMemcachedServer}:                       "SPAN_KIND_SERVER",
 		{Type: EventTypeSQLServer}:                             "SPAN_KIND_SERVER",
+		{Type: EventTypeTuxedoServer}:                          "SPAN_KIND_SERVER",
+		{Type: EventTypeTuxedoClient}:                          "SPAN_KIND_CLIENT",
 		{Type: EventTypeHTTPClient}:                            "SPAN_KIND_CLIENT",
 		{Type: EventTypeGRPCClient}:                            "SPAN_KIND_CLIENT",
 		{Type: EventTypeSQLClient}:                             "SPAN_KIND_CLIENT",

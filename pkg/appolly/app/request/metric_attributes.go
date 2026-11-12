@@ -181,6 +181,7 @@ func MessagingMessageID(val string) attribute.KeyValue {
 const (
 	RPCSystemAWSAPI = "aws-api"
 	RPCSystemONCRPC = "onc_rpc"
+	RPCSystemTuxedo = "tuxedo"
 )
 
 const (

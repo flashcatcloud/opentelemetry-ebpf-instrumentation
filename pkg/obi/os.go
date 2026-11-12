@@ -6,6 +6,7 @@
 package obi // import "go.opentelemetry.io/obi/pkg/obi"
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -19,7 +20,8 @@ import (
 	"go.opentelemetry.io/obi/pkg/internal/helpers"
 )
 
-// Minimum required Kernel version: 5.8 (or 4.18 for RHEL-based distros)
+// Minimum required Kernel version: 5.8, with explicit exceptions for supported
+// enterprise kernels that backport the required eBPF features.
 const (
 	minKernMaj, minKernMin         = 5, 8
 	minRHELKernMaj, minRHELKernMin = 4, 18
@@ -68,6 +70,40 @@ var isRHELBased = func() bool {
 	return false
 }
 
+func parseOSReleaseIsKylinV10(data []byte) bool {
+	var idKylin, versionV10 bool
+	for line := range strings.SplitSeq(strings.ToLower(string(data)), "\n") {
+		key, value, found := strings.Cut(line, "=")
+		if !found {
+			continue
+		}
+		value = strings.Trim(value, `"'`)
+		switch key {
+		case "id":
+			idKylin = value == "kylin"
+		case "version_id":
+			versionV10 = strings.TrimPrefix(value, "v") == "10"
+		}
+	}
+	return idKylin && versionV10
+}
+
+var kylinV10KernelRE = regexp.MustCompile(`\.ky10(?:\.|\b)`)
+
+func parseProcVersionIsKylinV10(data []byte) bool {
+	return kylinV10KernelRE.Match(bytes.ToLower(data))
+}
+
+var isKylinV10 = func() bool {
+	if data, err := os.ReadFile("/etc/os-release"); err == nil && parseOSReleaseIsKylinV10(data) {
+		return true
+	}
+	if data, err := os.ReadFile("/proc/version"); err == nil && parseProcVersionIsKylinV10(data) {
+		return true
+	}
+	return false
+}
+
 // hasBTF checks whether the kernel exposes BTF information by looking for the
 // vmlinux BTF file in the canonical sysfs location and fallback paths (mirroring
 // libbpf's btf__load_vmlinux_btf).
@@ -108,7 +144,9 @@ func checkOSSupport() error {
 	// RHEL relaxation only applies at the 4.18 floor.
 	rhel418 := major == minRHELKernMaj && minor == minRHELKernMin && isRHELBased()
 	lab419 := major == 4 && minor == 19 && os.Getenv("OBI_LAB_ALLOW_KERNEL_419") == "1"
-	if !general && !rhel418 && !lab419 {
+	// Kylin V10's 4.19 kernel backports the eBPF and BTF features OBI requires.
+	kylin419 := major == 4 && minor == 19 && isKylinV10()
+	if !general && !rhel418 && !kylin419 && !lab419 {
 		return fmt.Errorf("kernel version %d.%d not supported. Minimum required version is %d.%d",
 			major, minor, minKernMaj, minKernMin)
 	}

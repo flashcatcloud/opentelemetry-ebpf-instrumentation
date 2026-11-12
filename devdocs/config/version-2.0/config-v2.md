@@ -299,7 +299,7 @@ The `capture` grouping was introduced for two reasons:
 
 - `policy`: global rule evaluation behavior (default action, match order, timing).
 - `rules`: ordered workload selection rules (include/exclude by process identity, Kubernetes metadata, etc.).
-- `instrumentation`: protocol-specific capture controls (HTTP, gRPC, SQL, Redis, Kafka, MongoDB, Couchbase, DNS, GPU, Aerospike).
+- `instrumentation`: protocol-specific capture controls (HTTP, gRPC, SQL, Redis, Kafka, MongoDB, Couchbase, DNS, GPU, Aerospike, Tuxedo).
 - `exceptions`: runtime exception capture enablement; records use the logs pipeline.
 - `runtimes`: language runtime injection controls (Go probes, Node.js SIGUSR1, Java agent attachment).
 - `network`: network flow capture configuration.
@@ -529,7 +529,7 @@ tracked in
 The `capture.instrumentation` section defines protocol-specific instrumentation controls, including enablement and filtering for traces and metrics.
 
 All protocols (HTTP, gRPC, SQL, Redis, Kafka, MongoDB, Couchbase, DNS, GPU,
-Aerospike) have a consistent base structure for trace and metric enablement.
+Aerospike, Tuxedo) have a consistent base structure for trace and metric enablement.
 Each protocol can also have specific subsections; for example, SQL has `mysql`
 and `postgres`, while HTTP has `routes.discovery`.
 
