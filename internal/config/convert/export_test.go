@@ -66,6 +66,7 @@ func TestRuntimeToV2DefaultConfig(t *testing.T) {
 	require.Equal(t, schema.Duration(5*time.Second), value(t, ext.Capture.Policy, "min_process_age"))
 
 	require.Equal(t, 500, value(t, ext.Capture.Engine, "batching", "wakeup_len"))
+	require.Equal(t, 4096, value(t, ext.Capture.Engine, "batching", "stats", "wakeup_bytes"))
 	require.Equal(t, 100, value(t, ext.Capture.Engine, "batching", "batch_length"))
 	require.Equal(t, schema.Duration(time.Second), value(t, ext.Capture.Engine, "batching", "batch_timeout"))
 	require.Equal(t, config.TCBackendAuto, value(t, ext.Capture.Engine, "traffic", "control_backend"))
@@ -230,6 +231,7 @@ func TestRuntimeToV2CustomConfig(t *testing.T) {
 	cfg.EBPF.BpfDebug = true
 	cfg.EBPF.ProtocolDebug = true
 	cfg.EBPF.WakeupLen = 8
+	cfg.EBPF.StatsWakeupDataBytes = 8192
 	cfg.EBPF.BatchLength = 9
 	cfg.EBPF.BatchTimeout = 10 * time.Second
 	cfg.EBPF.ContextPropagation = config.ContextPropagationAll
@@ -364,6 +366,7 @@ func TestRuntimeToV2CustomConfig(t *testing.T) {
 	require.Equal(t, schema.Duration(6*time.Second), value(t, ext.Capture.Policy, "min_process_age"))
 	require.Equal(t, true, value(t, ext.Capture.Engine, "pid_filter", "disabled"))
 	require.Equal(t, 8, value(t, ext.Capture.Engine, "batching", "wakeup_len"))
+	require.Equal(t, 8192, value(t, ext.Capture.Engine, "batching", "stats", "wakeup_bytes"))
 	require.Equal(t, 9, value(t, ext.Capture.Engine, "batching", "batch_length"))
 	require.Equal(t, schema.Duration(10*time.Second), value(t, ext.Capture.Engine, "batching", "batch_timeout"))
 	require.Equal(t, config.ContextPropagationAll, value(t, ext.Capture.Engine, "propagation", "context_propagation"))
@@ -995,6 +998,42 @@ func TestRuntimeToV2HTTPBodySizeMetrics(t *testing.T) {
 
 		require.Equal(t, true, value(t, ext.Capture.Instrumentation, "http", "enabled", "body_size_metrics"))
 	})
+}
+
+func TestRuntimeToV2RequestPhaseSpansRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		httpDisabled bool
+	}{
+		{name: "enabled"},
+		{name: "HTTP disabled", httpDisabled: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := defaultRuntimeConfig()
+			cfg.Traces.DisableHTTPRequestPhaseSpans = tt.httpDisabled
+
+			doc, _ := RuntimeToV2(&cfg)
+
+			data, err := yaml.Marshal(doc)
+			require.NoError(t, err)
+
+			parsedDoc, parsedExt, err := schema.ParseStandaloneYAML(data)
+			require.NoError(t, err)
+
+			require.Equal(t, !tt.httpDisabled, value(t, parsedExt.Capture.Instrumentation, "http", "enabled", "request_phase_spans"))
+
+			got, err := DocumentToRuntime(parsedDoc)
+			require.NoError(t, err)
+
+			require.Equal(t, tt.httpDisabled, got.Traces.DisableHTTPRequestPhaseSpans)
+		})
+	}
 }
 
 func TestRuntimeToV2MetricInstrumentationsUseEnabledExporters(t *testing.T) {
