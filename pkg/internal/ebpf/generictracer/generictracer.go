@@ -635,6 +635,7 @@ func (p *Tracer) USDTProbes() map[string][]*ebpfcommon.USDTProbeDesc {
 	if !p.cfg.AppRuntimeMetricsEnabled() {
 		return nil
 	}
+	hotspotFallback := p.hotspotMemoryPoolFallback()
 	return map[string][]*ebpfcommon.USDTProbeDesc{
 		"libjvm.so": {
 			{
@@ -644,6 +645,7 @@ func (p *Tracer) USDTProbes() map[string][]*ebpfcommon.USDTProbeDesc {
 				SpecsMap:    p.bpfObjects.ObiUsdtSpecs,
 				IPMap:       p.bpfObjects.ObiUsdtIpToSpecId,
 				SpecManager: &p.jvmUSDTManager,
+				Fallback:    hotspotFallback,
 			},
 			{
 				Provider:    "hotspot",
@@ -652,6 +654,33 @@ func (p *Tracer) USDTProbes() map[string][]*ebpfcommon.USDTProbeDesc {
 				SpecsMap:    p.bpfObjects.ObiUsdtSpecs,
 				IPMap:       p.bpfObjects.ObiUsdtIpToSpecId,
 				SpecManager: &p.jvmUSDTManager,
+				Fallback:    hotspotFallback,
+			},
+		},
+	}
+}
+
+// hotspotMemoryPoolFallback reports what the HotSpot memory pool USDT probes
+// would, for JVM builds shipped without them.
+func (p *Tracer) hotspotMemoryPoolFallback() *ebpfcommon.USDTFallback {
+	return &ebpfcommon.USDTFallback{
+		Probes: []ebpfcommon.USDTFallbackProbe{
+			{
+				// Mangled <Name>Pool::get_memory_usage(). HotSpot names every MemoryPool
+				// type <Name>Pool, so the pool types a JDK release adds match too.
+				SymbolSuffix: "Pool16get_memory_usageEv",
+				Start:        p.bpfObjects.ObiUprobeHotspotMemoryPoolUsage,
+				Return:       p.bpfObjects.ObiUretprobeHotspotMemoryPoolUsage,
+			},
+			{
+				SymbolPrefix: "_ZN15GCMemoryManager8gc_beginE",
+				Start:        p.bpfObjects.ObiUprobeHotspotGcBegin,
+				Return:       p.bpfObjects.ObiUretprobeHotspotGcBegin,
+			},
+			{
+				SymbolPrefix: "_ZN15GCMemoryManager6gc_endE",
+				Start:        p.bpfObjects.ObiUprobeHotspotGcEnd,
+				Return:       p.bpfObjects.ObiUretprobeHotspotGcEnd,
 			},
 		},
 	}
