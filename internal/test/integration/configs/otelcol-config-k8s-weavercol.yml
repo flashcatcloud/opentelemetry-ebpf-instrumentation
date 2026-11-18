@@ -33,17 +33,18 @@ exporters:
       insecure: true
     # weaver's OTLP receiver rejects gzip-compressed payloads
     compression: none
+    timeout: 10s
     sending_queue:
       enabled: true
       queue_size: 500
       block_on_overflow: false
     retry_on_failure:
-      # Shorter than validateWeaver's final drain window, so an export either
-      # reaches weaver or increments send_failed before teardown scrapes it.
+      # Service routing can lag behind the host-mapped admin endpoint at startup.
+      # Keep this below validateWeaver's drain window, including a final request.
       enabled: true
       initial_interval: 1s
       max_interval: 5s
-      max_elapsed_time: 15s
+      max_elapsed_time: 60s
 service:
   # Expose weavercol's own telemetry so the Go harness can read the
   # exporter's send/enqueue failure counters at teardown: any export dropped
