@@ -23,6 +23,8 @@ services:
       - ../../../testoutput/run-internal-metrics-trace-errors:/var/run/obi
       - /sys/kernel/tracing:/sys/kernel/tracing:rw
     image: hatest-obi
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     privileged: true
     pid: "host"
     environment:
@@ -32,6 +34,7 @@ services:
       OTEL_EBPF_SERVICE_NAMESPACE: "integration-test"
       OTEL_EBPF_METRICS_INTERVAL: "1s"
       OTEL_EBPF_INTERNAL_METRICS_INTERVAL: "1s"
+      OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: "${METRICS_ENDPOINT:-http://otelcol:4318/v1/metrics}"
       OTEL_EBPF_BPF_METRIC_SCRAPE_INTERVAL: "1s"
       OTEL_EBPF_LOG_LEVEL: "DEBUG"
       OTEL_EBPF_BPF_DEBUG: "TRUE"
