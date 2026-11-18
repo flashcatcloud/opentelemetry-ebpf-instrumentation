@@ -26,8 +26,8 @@ const (
 
 	// weaverK8sDrainWindow is how long validateWeaver waits after weaver is
 	// reachable before stopping it: it must cover the weavercol `interval`
-	// processor tick (10s), retry window (60s), final request timeout (10s)
-	// and reconnect backoff (5s) in otelcol-config-k8s-weavercol.yml.
+	// processor tick (10s), retry window (60s) and final request timeout (10s)
+	// in otelcol-config-k8s-weavercol.yml, with a five-second margin.
 	weaverK8sDrainWindow = 85 * time.Second
 
 	// weaverK8sEmptyReportAttempts is how many stop + read cycles to try
