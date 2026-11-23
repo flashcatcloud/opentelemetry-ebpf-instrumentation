@@ -576,7 +576,6 @@ Use `db.sanitize_query_text` to enable sanitization across supported database pr
 Go callers can continue using `SanitizeSQLQueryText` in `obi.Attributes`,
 `attributes.SelectorConfig`, and `tracesgen.GroupSpansOptions` with the same SQL-only behavior.
 
-
 #### HTTP query-parameter redaction
 
 HTTP query-parameter values are redacted while OBI constructs span URL
