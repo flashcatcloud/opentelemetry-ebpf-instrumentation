@@ -17,8 +17,10 @@ import (
 	discexec "go.opentelemetry.io/obi/pkg/appolly/discover/exec"
 	"go.opentelemetry.io/obi/pkg/appolly/services"
 	ebpfcommon "go.opentelemetry.io/obi/pkg/ebpf/common"
+	"go.opentelemetry.io/obi/pkg/export/otel/otelcfg"
 	cpythonruntime "go.opentelemetry.io/obi/pkg/internal/cpython/runtime"
 	ebpfconvenience "go.opentelemetry.io/obi/pkg/internal/ebpf/convenience"
+	"go.opentelemetry.io/obi/pkg/internal/ebpf/gotracer"
 	"go.opentelemetry.io/obi/pkg/obi"
 )
 
@@ -146,4 +148,38 @@ func TestPythonExceptionControllerPythonDisabled(t *testing.T) {
 	// An allowed process would reach attachment and require a tracer.
 	require.NotPanics(t, func() { controller.allow(1, service) })
 	assert.Empty(t, controller.processes)
+}
+
+func TestPythonExceptionMapCompatibility(t *testing.T) {
+	originalSupport := tcpIteratorSupport
+	tcpIteratorSupport = func() error { return nil }
+	t.Cleanup(func() { tcpIteratorSupport = originalSupport })
+	for _, enabled := range []bool{false, true} {
+		name := "disabled"
+		if enabled {
+			name = "enabled"
+		}
+		t.Run(name, func(t *testing.T) {
+			cfg := &obi.Config{}
+			cfg.Exceptions.Enabled = enabled
+			cfg.Logs.Protocol = otelcfg.ProtocolDebug
+			goBundles, err := gotracer.New(nil, cfg, nil).LoadSpecs()
+			require.NoError(t, err)
+			genericBundles, err := New(nil, cfg, nil).LoadSpecs()
+			require.NoError(t, err)
+			for _, name := range []string{BpfMapPythonExceptionProcs, BpfMapPythonExceptionPending} {
+				goMap := goBundles[0].Spec.Maps[name]
+				genericMap := genericBundles[0].Spec.Maps[name]
+				require.NotNil(t, goMap, name)
+				require.NotNil(t, genericMap, name)
+				assert.Equal(t, genericMap.MaxEntries, goMap.MaxEntries, name)
+				assert.Equal(t, genericMap.Pinning, goMap.Pinning, name)
+				if enabled {
+					assert.Greater(t, goMap.MaxEntries, uint32(1), name)
+				} else {
+					assert.Equal(t, uint32(1), goMap.MaxEntries, name)
+				}
+			}
+		})
+	}
 }
