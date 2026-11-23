@@ -8,7 +8,7 @@ through language-specific library instrumentation documented later in this file.
 | HTTP          |    All    |     1.0/1.1 | All                                                                                      |  Yes   |                Yes | Without a runtime-specific injector, generic TLS inject uses TCP option kind 25 only between OBI instances. L7 proxies may drop it. Header inject works for plaintext. Java 11+ `HttpClient.send()` and `sendAsync()` support HTTPS HTTP/1.1 header injection through the OBI Java agent on compatible JDKs. See [Java HttpClient propagation](java-httpclient-propagation.md).
 | HTTP          |    All    |         2.0 | All                                                                                      |  Yes   |                Yes | Network-level HPACK inject/extract on plaintext HTTP/2. Generic TLS cannot inject (`sk_msg` sees ciphertext); extract still works if a peer injected. Huffman-encoded `traceparent` extract requires kernel 5.17+. Go library instrumentation covers TLS inject via uprobes. On the generic path, about six streams that share one read or write are captured; extra streams are dropped instead of being reported with wrong values. See [grpc-context-propagation.md](grpc-context-propagation.md).
 | gRPC          |    All    |        1.0+ | All                                                                                      |  Yes   |                Yes | Same HPACK path as HTTP/2. Can't get method for long living connections before OBI started, will mark method with `*`. Generic TLS cannot inject. Huffman extract requires kernel 5.17+. Message body capture is not supported (needs a `.proto` OBI does not have).
-| MySQL         |    All    |         All | All                                                                                      |  Yes   |                 No |             In the case of prepared statements, if the statement was prepared before OBI started then the query might be missed
+| MySQL         |    All    |         All | All                                                                                      |  Yes   |                 No |             In the case of prepared statements, if the statement was prepared before OBI started then the query might be missed. Connections opened before OBI started have no `db.namespace` until they next change database, and Go `database/sql` spans have none
 | PostgreSQL    |    All    |         All | All                                                                                      |  Yes   |                 No |             In the case of prepared statements, if the statement was prepared before OBI started then the query might be missed
 | MSSQL         |    All    |         All | All                                                                                      |  Yes   |                 No |             In the case of prepared statements, if the statement was prepared before OBI started then the query might be missed
 | Redis         |    All    |         All | All                                                                                      |  Yes   |                 No |             For already started connections, can't infer the number of the database, and won't add the `db.namespace` attribute
@@ -88,6 +88,14 @@ standalone and Collector receiver deployments. See the
 [attribute selection configuration](config/version-2.0/config-v2.md#captureattributesselect-section)
 for examples and compatibility with existing standalone settings.
 
+## HTTP query-parameter redaction
+
+Config v2 supports a complete selection of query-parameter names whose values
+are redacted in HTTP span URL attributes, in both standalone and Collector
+receiver deployments. Omitted settings preserve the built-in protection.
+See [HTTP query-parameter redaction](config/version-2.0/config-v2.md#http-query-parameter-redaction)
+for replacement semantics and migration from Config v1.
+
 ## Go Instrumentation
 
 Specifically for Go applications, OBI chooses to instrument libraries directly using Uprobes, instead of instrumenting
@@ -103,6 +111,7 @@ To turn this off and fallback to the normal network based instrumentation for Go
 | golang.org/x/net/http2         |    HTTP    |             >= 0.12.0 | All     |  Yes   |                Yes |         N/A
 | github.com/gorilla/mux         |    HTTP    |             >= v1.5.0 | All     |  Yes   |                Yes |         N/A
 | github.com/gin-gonic/gin       |    HTTP    |   >= v1.6.0,!= v1.7.5 | All     |  Yes   |                Yes |         N/A
+| github.com/emicklei/go-restful/v3 |    HTTP    |             >= v3.0.0 | All     |  Yes   |                Yes |         N/A
 | google.golang.org/grpc         |    gRPC    |               >= 1.40 | All     |  Yes   |                Yes |         N/A
 | net/rpc/jsonrpc                |  JsonRPC   |               >= 1.17 | All     |  Yes   |                 No |         N/A
 | database/sql                   |    SQL     |               >= 1.17 | All     |  Yes   |                 No |         N/A

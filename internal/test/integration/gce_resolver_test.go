@@ -101,6 +101,7 @@ func testGCEServiceResolution(t *testing.T, detect bool) {
 		Env: []string{
 			"GCE_TEST_ENDPOINT=" + endpoint,
 			"GCE_METADATA_HOST=mock-imds",
+			"AWS_EC2_METADATA_DISABLED=true",
 		},
 		Logs: createLogOutput(t, "gce-resolver"),
 	}

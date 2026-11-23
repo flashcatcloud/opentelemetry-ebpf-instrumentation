@@ -108,6 +108,8 @@ var DefaultSensitiveQueryParams = []string{
 type SensitiveQueryParamsConfig struct {
 	Add    []string `yaml:"add" env:"OTEL_EBPF_SENSITIVE_QUERY_PARAMS_ADD" envSeparator:","`
 	Remove []string `yaml:"remove" env:"OTEL_EBPF_SENSITIVE_QUERY_PARAMS_REMOVE" envSeparator:","`
+	// Replacement is set only by Config v2. Nil preserves REDACTED.
+	Replacement *string `yaml:"-" env:"-" json:"-"`
 }
 
 func (c SensitiveQueryParamsConfig) Effective() []string {
@@ -132,8 +134,10 @@ type SelectorConfig struct {
 	SelectionCfg            Selection
 	ExtraGroupAttributesCfg map[string][]attr.Name
 	SensitiveQueryParamsCfg SensitiveQueryParamsConfig
-	SanitizeSQLQueryText    bool
+	SanitizeDBQueryText     bool
 	UseV2Selection          bool
+	// Deprecated: use SanitizeDBQueryText to sanitize all database protocols.
+	SanitizeSQLQueryText bool
 }
 
 // AttrSelector returns, for each metric, the attributes that have to be reported
