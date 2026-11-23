@@ -116,6 +116,10 @@ section empty once drained.
   `attributes.select` to split duration series by HTTP version. When selected, unknown
   versions are omitted from OTLP attributes and use an empty Prometheus label.
 
+- HTTP metric data points for requests without a known route (for example with
+  `routes.incoming.unmatched: unset` or `routes.outgoing.unmatched: unset`) omit `http.route` (server) and `url.template` (client) in OTLP
+  instead of carrying an empty string, matching the spans. Prometheus labels are unchanged.
+
 - A SQL++ span from a server other than Couchbase (`db.system.name` `other_sql`) that names no
   collection or bucket is named `{db.operation.name}`, like other SQL spans, instead of
   `{db.operation.name} {server.address}:{server.port}`. Couchbase SQL++ spans are unchanged.
@@ -133,6 +137,13 @@ section empty once drained.
   `client.address`. These attributes remain available on the stable HTTP duration metrics.
   They were opt-in, so only selections including them change. Attribute filters and spans
   retain these attributes.
+- The opt-in `url.path` dimension on both stable HTTP duration metrics and `client.address`
+  on `http.server.request.duration` are deprecated as high-cardinality OBI extensions
+  outside the HTTP metric semantic conventions. They remain supported throughout OBI v1,
+  with removal planned for OBI v2. The notice also applies to the Prometheus labels
+  `url_path` and `client_address`. Use `http.route` on server duration metrics or opt into
+  `url.template` on client duration metrics for route aggregation, and spans for raw paths
+  or client addresses. See the [migration guidance](../TELEMETRY.md#deprecated-http-metric-dimensions).
 - The span reference (`site/docs/spans.md`) documents every span's name. The emitted
   telemetry is unchanged.
 - The trace resource no longer carries `otel.scope.name`. Spans now carry the instrumentation
@@ -159,6 +170,12 @@ section empty once drained.
   per-bucket counts for the bounds that received executions only. Bucket values grow and new
   `le` series appear, and `histogram_quantile` over this metric now returns correct values.
   The OTLP `obi.bpf.probe.latency` histogram is unchanged.
+- MySQL and MariaDB spans and the database operation duration metrics carry `db.namespace` once
+  OBI has seen the connection's handshake or a database change, so their metric series split by
+  database.
+- MySQL and MariaDB spans for statements that name no table are named
+  `{db.operation.name} {db.namespace}` when the database is known (`SELECT sakila` instead of
+  `SELECT`). This changes `span.name` on the span metrics as well.
 
 ## Hosting notes
 

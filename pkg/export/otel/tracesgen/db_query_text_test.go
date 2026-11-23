@@ -22,11 +22,11 @@ func queryTextSpans() []request.Span {
 		{Type: request.EventTypeSQLServer, SubType: int(request.DBMySQL), Method: "INSERT", Statement: "INSERT INTO t (id, name) VALUES (1, 'first')"},
 		{Type: request.EventTypeSQLClient, SubType: int(request.DBMSSQL), Method: "SELECT", Statement: "SELECT [a] FROM t WHERE id = @p1"},
 		{Type: request.EventTypeHTTPClient, SubType: request.HTTPSubtypeSQLPP, Method: "SELECT", Statement: `SELECT * FROM b WHERE type = "airline"`},
-		{Type: request.EventTypeRedisClient, Method: "SET", Path: "SET key 1"},
+		{Type: request.EventTypeRedisClient, Method: "SET", Path: "SET key 1", DBQueryTextSanitized: "SET key ?"},
 	}
 }
 
-func groupedQueryTexts(t *testing.T, sanitize bool) []string {
+func groupedQueryTexts(t *testing.T, opts GroupSpansOptions) []string {
 	groups := GroupSpansWithOptions(
 		t.Context(),
 		queryTextSpans(),
@@ -35,7 +35,7 @@ func groupedQueryTexts(t *testing.T, sanitize bool) []string {
 		instrumentations.NewInstrumentationSelection(
 			[]instrumentations.Instrumentation{instrumentations.InstrumentationALL},
 		),
-		GroupSpansOptions{SanitizeSQLQueryText: sanitize},
+		opts,
 	)
 
 	var got []string
@@ -62,7 +62,7 @@ func TestDBQueryTextRawByDefault(t *testing.T) {
 		require.True(t, ok)
 		assert.Equal(t, want[i], value.AsString())
 	}
-	assert.ElementsMatch(t, want, groupedQueryTexts(t, false))
+	assert.ElementsMatch(t, want, groupedQueryTexts(t, GroupSpansOptions{}))
 }
 
 func TestDBQueryTextSanitized(t *testing.T) {
@@ -71,16 +71,35 @@ func TestDBQueryTextSanitized(t *testing.T) {
 		"INSERT INTO t (id, name) VALUES (?, ?)",
 		"SELECT [a] FROM t WHERE id = @p1",
 		"SELECT * FROM b WHERE type = ?",
-		"SET key 1",
+		"SET key ?",
 	}
 
-	assert.ElementsMatch(t, want, groupedQueryTexts(t, true))
+	assert.ElementsMatch(t, want, groupedQueryTexts(t, GroupSpansOptions{SanitizeDBQueryText: true}))
+}
+
+func TestLegacySQLQueryTextSanitization(t *testing.T) {
+	want := []string{
+		`SELECT "a" FROM t WHERE id = ?`,
+		"INSERT INTO t (id, name) VALUES (?, ?)",
+		"SELECT [a] FROM t WHERE id = @p1",
+		"SELECT * FROM b WHERE type = ?",
+		"SET key 1",
+	}
+	assert.ElementsMatch(t, want, groupedQueryTexts(t, GroupSpansOptions{SanitizeSQLQueryText: true}))
 }
 
 func TestDBQueryTextOmittedWhenSanitizingIsUnsafe(t *testing.T) {
 	span := request.Span{Type: request.EventTypeSQLClient, SubType: int(request.DBGeneric), Method: "SELECT", Statement: `SELECT q'[it's secret]' FROM dual`}
 	selected := map[attr.Name]struct{}{attr.DBQueryText: {}}
 
-	_, ok := attrValue(traceAttributesSelectorInternal(&span, selected, nil, true), string(attr.DBQueryText))
+	_, ok := attrValue(traceAttributesSelectorInternal(&span, selected, nil, true, defaultQueryParamReplacement), string(attr.DBQueryText))
+	assert.False(t, ok)
+}
+
+func TestRedisQueryTextOmittedWithoutSanitizedText(t *testing.T) {
+	span := request.Span{Type: request.EventTypeRedisClient, Method: "SET", Path: "SET key 1"}
+	selected := map[attr.Name]struct{}{attr.DBQueryText: {}}
+
+	_, ok := attrValue(traceAttributesSelectorInternal(&span, selected, nil, true, defaultQueryParamReplacement), string(attr.DBQueryText))
 	assert.False(t, ok)
 }

@@ -98,6 +98,7 @@ func newGraphBuilderWithProtocolMetricSelection(
 		UseV2Selection:          config.Attributes.UseV2Selection,
 		ExtraGroupAttributesCfg: config.Attributes.ExtraGroupAttributes,
 		SensitiveQueryParamsCfg: config.Attributes.SensitiveQueryParams,
+		SanitizeDBQueryText:     config.Attributes.SanitizeDBQueryText,
 		SanitizeSQLQueryText:    config.Attributes.SanitizeSQLQueryText,
 	}
 
